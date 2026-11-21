@@ -1,4 +1,6 @@
 packages:
+  - 'apps/*'
+  - 'services/*'
   - 'website'
   - 'plugin-examples'
   - 'indicator-examples'

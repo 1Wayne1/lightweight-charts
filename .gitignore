@@ -54,3 +54,12 @@ tests/e2e/memleaks/.logs/
 # fixture build output
 tests/fixtures/**/dist/
 *.tsbuildinfo
+
+# Terminal application output and local configuration
+/apps/*/dist/
+/apps/*/src-tauri/target/
+/apps/*/src-tauri/gen/
+.env
+.env.*
+!.env.example
+*.dump
