@@ -1,0 +1,84 @@
+# 多端加密货币看盘工作台
+
+基于本仓库的 Lightweight Charts 和画线插件，构建面向 macOS、Windows、iOS 的个人看盘工具。共享 Web 界面通过 Tauri 2 封装；图表配置、周期和画线以交易对为单位保存，最终通过自托管云端跨设备同步。
+
+## 当前可运行的内容
+
+- TypeScript + Vite Web 骨架，使用本仓库构建的图表库。
+- TradingView 风格的全屏深色工作区：顶部标签与周期栏、左侧工具栏、右侧自选列表和交易对详情。
+- Binance USDT 现货及 USDⓈ-M USDT 永续真实行情，内置八个常用币种的两类市场，可搜索交易所目录中的更多 USDT 交易对。
+- 基于 `trading-signals` 的 TradingView 风格指标下拉面板，区分「常用指标」「全部指标（48 项，覆盖趋势均线、通道波动、动量摆动与成交量）」与「已添加」：MA 与 EMA 各自支持最多 5 条可配置周期、颜色和显隐的均线；支持 BOLL、VWAP、SuperTrend、MACD、RSI、KDJ、ATR 等主图叠加与独立副图，并支持任意调整 K 线主图与各副图的上下顺序，以及时间范围和专注模式。
+- 复用仓库 `@tradingview/lwc-plugin-drawing-tools` 绘图插件：桌面左侧栏按光标、趋势线、江恩与斐波那契、形态、预测与测量、几何与画笔、文字与标注、图标排列。图标统一居中，右侧箭头在悬浮或键盘聚焦时显示。点击主按钮选中该组当前工具，再点展开菜单，再点收起并保留当前工具；选择子工具后替换该组图标与默认工具。箭头可直接展开或收起含子小节的菜单，只展示已实现工具。手机保留独立绘图面板，置顶常用工具并使用同一分组目录。
+- 左侧栏提供测量与放大快捷操作，以及磁吸、连续绘图、全局锁定、显隐和删除控制。菜单支持方向键、Enter、Escape 和点击外部关闭；批量锁定与删除可一次撤销，删除保留已锁定画线。画线支持时间与价格锚点本机持久化、按交易对隔离、切换周期/历史补齐重投影、删除墓碑、撤销/重做、刷新恢复与 JSON 备份导出。
+- 对应现有线条、形状、通道、范围和箭头标记支持直接附加文字，斐波那契回撤 / 扩展支持各层级文字；提供图上编辑、文字样式和对齐设置，兼容旧数据。详见[附加文字说明与官方依据](drawing-text.md)。
+- 绘图属性采用紧凑的可拖动浮动栏，按工具实际能力显示颜色、填充、线宽、线型、字号、锁定、删除和更多操作。点击空白或按 Esc 取消选中后隐藏；双击对象或点击齿轮打开分工具页签设置。斐波那契层级可逐行调整开关、比例和颜色，坐标使用 UTC 时间与价格；确定时整次提交，取消不保存，支持一次撤销。桌面顶部、手机图表选项提供撤销 / 重做。
+- 独立手机界面：浅色自选表 / 深色图表两页，仅保留这两个底部导航入口；支持竖屏和横屏安全区布局。
+- 手机左下角交易对短按搜索，长按后上下滑动预选、松手切换；周期与日期范围通过可展开的底部面板选择。
+- 本机保存标签页、周期与画线，刷新或重新打开交易对可恢复设置；损坏数据保留原内容并阻止静默覆盖。
+- 历史 K 线分页、实时增量更新、断线重连与缺口补齐；独立领域模型、行情、画线持久化/坐标重投影与手势测试。
+- 同步 API 进程健康检查、初始数据库迁移和 Docker Compose 开发环境。
+
+**行情已接入 Binance 公开 REST / WebSocket，无需 API Key；画线已接入本机保存，币本位、交割合约、账户鉴权、云同步和原生安装包尚未实现。** 页面会显示这些状态，不会将本机保存标记为云端同步成功。
+
+## 快速开始
+
+沿用仓库的 Node.js >= 22.3 和 `package.json` 中固定的 pnpm 版本。
+
+```bash
+pnpm install --frozen-lockfile
+# 首次运行先构建图表库、绘图插件和应用
+pnpm build:terminal
+pnpm dev:terminal
+```
+
+打开 <http://127.0.0.1:5173>。两个默认标签页分别保存周期；打开已存在的交易对会聚焦该标签页。关闭标签页会保留交易对设置；关闭全部标签页后可以重新打开。
+
+手机上点选自选表中的交易对可进入图表；按住左下角交易对约 320ms 后，上下滑动切换预选项，松手才应用。手势取消、页面退到后台或屏幕旋转会取消预选。也支持键盘：交易对按钮上按空格 / Enter 打开浮窗，上下键预选，Enter 确认，Escape 取消。周期面板顶部手柄可拖动或点击展开。
+
+手机与桌面复用同一套交易对偏好：切换交易对恢复各自周期，旋转屏幕不会修改周期。当前已在浏览器中检查手机竖屏 / 横屏布局，iOS 真机和原生封装仍待验证。
+
+```bash
+pnpm typecheck:terminal
+pnpm test:terminal
+pnpm lint:terminal
+pnpm build:terminal
+# 可选：单独运行 API 骨架
+pnpm dev:sync
+```
+
+工具栏浏览器回归可在启动 `pnpm dev:terminal` 后运行 `pnpm --filter @terminal/web test:toolbar`；测试使用独立无头浏览器和固定行情响应，覆盖菜单分组、绘图、锁定、删除撤销、刷新恢复及桌面 / 手机横竖屏。可通过 `TERMINAL_TEST_URL` 指定本机服务地址，通过 `TERMINAL_SCREENSHOTS` 指定截图输出目录；固定测试行情不会进入正常应用。
+
+生产 Web 构建输出到 `apps/terminal-web/dist/`。当前 Web 客户端未连接同步服务；运行 API 或 Docker 不会自动启用云同步。
+
+## Binance 行情
+
+- 搜索面板可切换「全部 / 现货 / USDT 永续」；例如 `BTCUSDT` 是现货，`BTCUSDT.P` 是 USDT 永续。两者周期和未来画线分别保存。
+- 首次读取最近 500 根 K 线，向右拖动图表以查看更早时间、接近历史左边界时自动补取 500 根。时间范围按钮作用于当前已加载数据。
+- K 线及真实基础币成交量通过 WebSocket 增量更新；24 小时报价来自 ticker 的滚动统计，不按当前图表周期计算。
+- 实时连接中断会显示重连状态；重新连接后用 REST 补齐缺口，再恢复增量更新。请求超时和限流会退避重试。关闭或切换交易对、页面退出时会取消旧请求与订阅。
+- 已有演示工作区读取时迁移到 Binance 现货，保留原偏好备份；已存在的 Binance 偏好优先，不覆盖永续设置。
+
+默认直连以下公开地址，不需要运行同步 API：
+
+| 市场 | REST | WebSocket |
+| --- | --- | --- |
+| 现货 | `https://data-api.binance.vision/api/v3` | `wss://data-stream.binance.vision/stream` |
+| USDT 永续 | `https://fapi.binance.com/fapi/v1` | `wss://fstream.binance.com/market/stream` |
+
+需要自托管行情转发时，可参考 `apps/terminal-web/.env.example` 设置四个 `VITE_BINANCE_*` 地址后重启开发服务 / 重新构建。REST 配置为根地址（应用追加 `/api/v3` 或 `/fapi/v1`），WebSocket 配置保留合约 `/market` 路径（应用追加 `/stream`）。转发服务需要支持浏览器 CORS 和 WebSocket。这些配置是公开地址，不放 API Key。当前网络或地区无法访问 Binance 时会明确显示错误，不使用模拟数据冒充行情。
+
+已在本机浏览器实测现货、永续的历史 K 线 / ticker / 实时 K 线，并验证搜索目录及周期隔离；iOS 真机仍待验证。协议参考 [现货官方文档](https://github.com/binance/binance-spot-api-docs) 和 [合约官方 SDK market 模块](https://github.com/binance/binance-connector-js/blob/master/clients/derivatives-trading-usds-futures/src/websocket-streams/modules/market-api.ts)。
+
+## 目录
+
+| 路径 | 职责 |
+| --- | --- |
+| `apps/terminal-web/` | 共享界面、图表生命周期、行情与存储适配 |
+| `apps/terminal-native/` | Tauri 2 多端封装规划，原生工程待接入 |
+| `packages/terminal-domain/` | 无 UI 依赖的交易对、周期、标签页、画线与同步契约 |
+| `services/sync-api/` | 同步服务骨架、后续数据库迁移 |
+| `deploy/terminal/` | 自托管 Docker Compose 与环境变量模板 |
+| `packages/lwc-plugin-drawing-tools/` | 已有绘图插件，通过应用适配器接入与持久化 |
+| `src/`、`packages/lwc-toolkit/` | 上游图表引擎与插件基础设施 |
+
+详细约定见 [架构与同步设计](architecture.md)、[开发路线图](roadmap.md)、[自托管说明](../../deploy/terminal/README.md) 和 [AGENTS.md](../../AGENTS.md)。

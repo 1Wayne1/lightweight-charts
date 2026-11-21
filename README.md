@@ -19,6 +19,8 @@
 
 [Demos][demo-url] | [Documentation](https://tradingview.github.io/lightweight-charts/) | [Reddit](https://www.reddit.com/r/TradingView/)
 
+本仓库的多端加密货币看盘应用从 [项目说明](docs/terminal/README.md) 开始；开发约定见 [AGENTS.md](AGENTS.md)。
+
 TradingView Lightweight Charts™ are one of the smallest and fastest financial HTML5 charts.
 
 The Lightweight Charts™ library is the best choice for you if you want to display financial data as an interactive chart on your web page, or replace static image charts with interactive ones. It does this without affecting your web page's loading speed and performance.
