@@ -7,7 +7,7 @@ import {
 	createMaRunner, getCatalogIndicator, histogramBarColor, type IndicatorRunner,
 } from './data/indicator-catalog';
 import {
-	MAX_MA_LINES, activePaneOrder, indicatorColor, indicatorParams, isIndicatorEnabled,
+	MAX_MA_LINES, activePaneOrder, indicatorColor, indicatorParams, isIndicatorVisible,
 	type IndicatorSettings, type PaneId,
 } from './data/indicators';
 
@@ -450,7 +450,17 @@ export function createTerminalChart(
 		scheduleLayout();
 	}
 
+	function syncIndicatorVisibility(): void {
+		maSeries.forEach((series, i) => series.applyOptions({ visible: isIndicatorVisible(currentSettings, 'ma') && Boolean(currentSettings.maLines[i]?.visible) }));
+		emaSeries.forEach((series, i) => series.applyOptions({ visible: isIndicatorVisible(currentSettings, 'ema') && Boolean(currentSettings.emaLines[i]?.visible) }));
+		volume.applyOptions({ visible: isIndicatorVisible(currentSettings, 'volume') });
+		for (const [id, entry] of [...overlays, ...subPanes]) {
+			for (const series of entry.series.values()) series.applyOptions({ visible: isIndicatorVisible(currentSettings, id) });
+		}
+	}
+
 	syncCatalogIndicators();
+	syncIndicatorVisibility();
 
 	chart.subscribeCrosshairMove(event => {
 		const hovered = event.seriesData.get(candles);
@@ -500,6 +510,7 @@ export function createTerminalChart(
 			volume.setData(data.map(c => ({ time: c.time as UTCTimestamp, value: c.volume, color: c.close >= c.open ? '#08998155' : '#f2364555' })));
 			syncAverages();
 			rebuildRunnersForData();
+			syncIndicatorVisibility();
 			if (initial) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, data.length - (mobileLayout ? 80 : 170)), to: data.length + 8 });
 			else if (range) chart.timeScale().setVisibleLogicalRange({ from: range.from + added, to: range.to + added });
 			if (data.length) onHover(data[data.length - 1]);
@@ -540,20 +551,26 @@ export function createTerminalChart(
 				syncAverages();
 			}
 			syncCatalogIndicators();
+			syncIndicatorVisibility();
 		},
-		activeOverlayPlots(): { id: string; shortName: string; plots: readonly { label: string; color: string }[] }[] {
-			const list: { id: string; shortName: string; plots: readonly { label: string; color: string }[] }[] = [];
-			for (const [id, entry] of overlays) {
-				if (!isIndicatorEnabled(currentSettings, id)) continue;
-				const def = getCatalogIndicator(id);
-				if (!def) continue;
-				list.push({ id, shortName: def.shortName, plots: entry.runner.plots.map(p => ({ label: p.label, color: p.color })) });
+		indicatorValues(): Record<string, { label: string; text: string; color: string }[]> {
+			const result: Record<string, { label: string; text: string; color: string }[]> = {};
+			const time = hoverTime ?? data.at(-1)?.time;
+			const x = time === undefined ? null : chart.timeScale().timeToCoordinate(time as UTCTimestamp);
+			const index = x === null ? null : chart.timeScale().coordinateToLogical(x);
+			const value = (series: ISeriesApi<'Line' | 'Histogram'>, label: string, color: string) => {
+				const point = index === null ? null : series.dataByIndex(Math.round(index));
+				return { label, text: point && 'value' in point && typeof point.value === 'number' ? series.priceFormatter().format(point.value) : '—', color: point && 'color' in point && typeof point.color === 'string' ? point.color : color };
+			};
+			result.ma = currentSettings.maLines.flatMap((line, i) => line.visible ? [value(maSeries[i], `MA ${line.period}`, line.color)] : []);
+			result.ema = currentSettings.emaLines.flatMap((line, i) => line.visible ? [value(emaSeries[i], `EMA ${line.period}`, line.color)] : []);
+			const volumeValue = value(volume, '成交量', '#92959e');
+			volumeValue.color = volumeValue.color.slice(0, 7);
+			result.volume = [volumeValue];
+			for (const [id, entry] of [...overlays, ...subPanes]) {
+				result[id] = entry.runner.plots.map(plot => value(entry.series.get(plot.key)!, plot.label, plot.color));
 			}
-			return list;
-		},
-		activeSubPanePlots(id: string): readonly { label: string; color: string; kind: 'line' | 'histogram' }[] {
-			const entry = subPanes.get(id);
-			return entry ? entry.runner.plots.map(p => ({ label: p.label, color: p.color, kind: p.kind })) : [];
+			return result;
 		},
 		destroy() {
 			if (layoutFrame !== undefined) cancelAnimationFrame(layoutFrame);

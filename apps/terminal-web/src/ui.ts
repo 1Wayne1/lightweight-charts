@@ -30,6 +30,7 @@ const paths = {
 	magnet: '<path d="M5 4v10a7 7 0 0 0 14 0V4h-4v10a3 3 0 0 1-6 0V4H5ZM5 8h4m6 0h4"/>',
 	lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
 	eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+	eyeOff: '<path d="m3 3 18 18M10 5a12 12 0 0 1 12 7s-2 4-5 6M6 6a21 21 0 0 0-4 6s4 7 10 7c1 0 2 0 3-1M10 10a3 3 0 0 0 4 4"/>',
 	trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
 	list: '<path d="M5 4h14v17l-7-4-7 4V4Zm3 4h8m-8 4h8"/>',
 	layers: '<path d="m2 8 10-6 10 6-10 6L2 8Zm0 5 10 6 10-6M2 18l10 6 10-6"/>',

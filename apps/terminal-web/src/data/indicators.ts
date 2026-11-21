@@ -24,6 +24,8 @@ export interface IndicatorSettings {
 	params: Record<string, Record<string, number>>;
 	colors: Record<string, string>;
 	paneOrder: PaneId[];
+	hidden: string[];
+	legendCollapsed: boolean;
 }
 
 export interface IndicatorPoint {
@@ -71,6 +73,8 @@ export function defaultIndicatorSettings(): IndicatorSettings {
 		params: {},
 		colors: {},
 		paneOrder: ['price', 'macd'],
+		hidden: [],
+		legendCollapsed: false,
 	};
 }
 
@@ -82,6 +86,7 @@ export function isIndicatorEnabled(settings: IndicatorSettings, id: string): boo
 }
 
 export function setIndicatorEnabled(settings: IndicatorSettings, id: string, value: boolean): void {
+	if (!value) settings.hidden = settings.hidden.filter(item => item !== id);
 	if (id === 'ma') { settings.maEnabled = value; return; }
 	if (id === 'ema') { settings.emaEnabled = value; return; }
 	if (id === 'volume') { settings.volume = value; return; }
@@ -95,6 +100,16 @@ export function setIndicatorEnabled(settings: IndicatorSettings, id: string, val
 	} else {
 		delete settings.enabled[id];
 	}
+}
+
+export function isIndicatorVisible(settings: IndicatorSettings, id: string): boolean {
+	return isIndicatorEnabled(settings, id) && !settings.hidden.includes(id);
+}
+
+export function setIndicatorVisible(settings: IndicatorSettings, id: string, visible: boolean): void {
+	if (!isIndicatorEnabled(settings, id)) return;
+	settings.hidden = settings.hidden.filter(item => item !== id);
+	if (!visible) settings.hidden.push(id);
 }
 
 export function indicatorParams(settings: IndicatorSettings, id: string): Record<string, number> {
@@ -196,6 +211,8 @@ export function parseIndicatorSettings(value: unknown): IndicatorSettings {
 			params: { rsi: { period: value.rsi.period as number } },
 			colors: { rsi: value.rsi.color },
 			paneOrder,
+			hidden: [],
+			legendCollapsed: false,
 		};
 	}
 
@@ -243,6 +260,9 @@ export function parseIndicatorSettings(value: unknown): IndicatorSettings {
 		paneOrder.push(item);
 	}
 	if (!paneOrder.includes('price')) throw new Error('Missing price pane');
+	const hidden = value.hidden === undefined ? [] : value.hidden;
+	if (!Array.isArray(hidden) || hidden.some(id => typeof id !== 'string' || !getCatalogIndicator(id)) || new Set(hidden).size !== hidden.length ||
+		(value.legendCollapsed !== undefined && typeof value.legendCollapsed !== 'boolean')) throw new Error('Invalid indicator legend settings');
 
 	return {
 		schemaVersion: 2,
@@ -255,6 +275,8 @@ export function parseIndicatorSettings(value: unknown): IndicatorSettings {
 		params,
 		colors,
 		paneOrder,
+		hidden: hidden as string[],
+		legendCollapsed: value.legendCollapsed === true,
 	};
 }
 

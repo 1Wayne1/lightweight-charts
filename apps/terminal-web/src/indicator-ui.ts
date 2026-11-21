@@ -142,8 +142,7 @@ export function renderIndicatorPanel(
 		const enabled = kind === 'ma' ? settings.maEnabled : settings.emaEnabled;
 		const lines: MovingAverageLineConfig[] = kind === 'ma' ? settings.maLines : settings.emaLines;
 		const setEnabled = (v: boolean): void => {
-			if (kind === 'ma') settings.maEnabled = v;
-			else settings.emaEnabled = v;
+			setIndicatorEnabled(settings, kind, v);
 		};
 
 		const header = element('div', 'ind-section-header');

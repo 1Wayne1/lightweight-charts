@@ -6,7 +6,7 @@ import {
 import {
 	MAX_MA_LINES, activePaneOrder, calculateEmaSeries, calculateRsiSeries, calculateSmaSeries,
 	defaultIndicatorSettings, movePaneOrder, moveVisiblePane,
-	nextLinePreset, parseIndicatorSettings, setIndicatorEnabled,
+	nextLinePreset, parseIndicatorSettings, setIndicatorEnabled, setIndicatorVisible, isIndicatorVisible,
 } from '../src/data/indicators.ts';
 
 const candles = Array.from({ length: 120 }, (_, i) => {
@@ -129,4 +129,28 @@ test('MACD histogram uses TradingView 4-state colors for above/below zero and gr
 	assert.equal(histogramBarColor(8, 10), '#B2DFDB');
 	assert.equal(histogramBarColor(-10, -5), '#FF5252');
 	assert.equal(histogramBarColor(-6, -10), '#FFCDD2');
+});
+
+test('legend visibility preserves added indicators, pane order and legacy settings', () => {
+	const settings = defaultIndicatorSettings();
+	settings.params.macd = { fast: 10 };
+	setIndicatorVisible(settings, 'macd', false);
+	setIndicatorVisible(settings, 'ma', false);
+	settings.legendCollapsed = true;
+	assert.equal(settings.enabled.macd, true);
+	assert.equal(settings.maEnabled, true);
+	assert.equal(isIndicatorVisible(settings, 'macd'), false);
+	assert.deepEqual(activePaneOrder(settings), ['price', 'macd']);
+	assert.deepEqual(parseIndicatorSettings(JSON.parse(JSON.stringify(settings))), settings);
+	setIndicatorVisible(settings, 'macd', true);
+	assert.equal(settings.params.macd.fast, 10);
+	assert.equal(isIndicatorVisible(settings, 'macd'), true);
+	setIndicatorEnabled(settings, 'ma', false); setIndicatorEnabled(settings, 'ma', true);
+	assert.equal(isIndicatorVisible(settings, 'ma'), true);
+	const old = { ...settings }; delete old.hidden; delete old.legendCollapsed;
+	assert.deepEqual(parseIndicatorSettings(old).hidden, []);
+	assert.equal(parseIndicatorSettings(old).legendCollapsed, false);
+	for (const invalid of [{ hidden: ['unknown'] }, { hidden: ['ma', 'ma'] }, { hidden: 'ma' }, { hidden: null }, { legendCollapsed: 'false' }]) {
+		assert.throws(() => parseIndicatorSettings({ ...settings, ...invalid }));
+	}
 });

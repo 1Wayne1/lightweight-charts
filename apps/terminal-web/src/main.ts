@@ -1,12 +1,13 @@
 import { TIMEFRAMES, TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseWorkspace, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type Workspace } from '@terminal/domain';
 import { CrosshairMode } from 'lightweight-charts';
 import { createTerminalChart, type ChartLayout, type IndicatorSettings, type TerminalChart } from './chart';
-import { getCatalogIndicator } from './data/indicator-catalog';
+import { INDICATOR_CATALOG, getCatalogIndicator } from './data/indicator-catalog';
 import {
-	INDICATOR_STORAGE_KEY, activePaneOrder, defaultIndicatorSettings, indicatorParams,
+	INDICATOR_STORAGE_KEY, activePaneOrder, defaultIndicatorSettings, isIndicatorEnabled, isIndicatorVisible, setIndicatorVisible,
 	moveVisiblePane, parseIndicatorSettings, setIndicatorEnabled, type PaneId,
 } from './data/indicators';
 import { renderIndicatorPanel } from './indicator-ui';
+import { indicatorLegendRow, updateIndicatorLegendValues } from './indicator-legend';
 import { catalogue, coinBadge, formatPrice, instruments, marketFor, marketLabel, priceTick, registerInstruments, symbolLabel } from './markets';
 import { BinanceProvider, defaultEndpoints } from './data/binance';
 import { startCandleFeed } from './data/candle-feed';
@@ -18,6 +19,7 @@ import { createDrawingSession, type DrawingSession } from './drawings/session';
 import { createDrawingUI } from './drawings/ui';
 import './style.css';
 import './mobile.css';
+import './indicator-legend.css';
 
 const STORAGE_KEY = 'crypto-terminal.workspace.v1';
 const periodLabels = { '1m': '1分', '5m': '5分', '15m': '15分', '1h': '1小时', '4h': '4小时', '1d': '日线' };
@@ -356,7 +358,7 @@ function applyPaneLayout(layout: ChartLayout): void {
 	for (const [id, el] of subPaneLabels) {
 		const bounds = layout.panes[id];
 		const visible = Boolean(state.activeTabId && (!bounds || bounds.visible));
-		el.hidden = !visible;
+		el.hidden = !visible || (settings.legendCollapsed && layout.maximizedPane !== id);
 		if (bounds) el.style.top = `${bounds.top + 8}px`;
 	}
 
@@ -537,35 +539,29 @@ function updateIndicatorLabels(): void {
 	const activeOrder = hasTab ? activePaneOrder(settings) : [];
 	const activeOrderSet = new Set(activeOrder);
 
+	const collapsed = settings.legendCollapsed;
+	const makeToggle = (count: number): HTMLButtonElement => {
+		const button = iconButton('chevron', collapsed ? '展开指标信息' : '收起指标信息', () => {
+			settings.legendCollapsed = !settings.legendCollapsed;
+			applyIndicators();
+			[...stageWrap.querySelectorAll<HTMLButtonElement>('.legend-collapse')].find(toggle => toggle.getClientRects().length)?.focus({ preventScroll: true });
+		});
+		button.className = 'legend-collapse'; button.setAttribute('aria-expanded', String(!collapsed));
+		if (collapsed) button.append(element('span', '', String(count)));
+		return button;
+	};
+	const makeRow = (id: string): HTMLDivElement => indicatorLegendRow(settings, id, () => {
+		const focused = document.activeElement instanceof HTMLElement && document.activeElement.closest('.indicator-legend-row')?.getAttribute('data-indicator') === id;
+		setIndicatorVisible(settings, id, !isIndicatorVisible(settings, id));
+		applyIndicators();
+		if (focused) stageWrap.querySelector<HTMLButtonElement>(`.indicator-legend-row[data-indicator="${id}"] [data-action=visibility]`)?.focus({ preventScroll: true });
+	}, () => openIndicatorDropdown(id));
+	const mainIndicators = hasTab ? INDICATOR_CATALOG.filter(def => def.placement === 'overlay' && isIndicatorEnabled(settings, def.id)) : [];
 	indicatorLegend.replaceChildren();
-	if (hasTab) {
-		if (settings.maEnabled) {
-			for (const line of settings.maLines) {
-				if (!line.visible) continue;
-				const tag = element('span', 'legend-tag', `MA${line.period}`);
-				tag.style.color = line.color;
-				indicatorLegend.append(tag);
-			}
-		}
-		if (settings.emaEnabled) {
-			for (const line of settings.emaLines) {
-				if (!line.visible) continue;
-				const tag = element('span', 'legend-tag', `EMA${line.period}`);
-				tag.style.color = line.color;
-				indicatorLegend.append(tag);
-			}
-		}
-		for (const overlay of chart?.activeOverlayPlots() ?? []) {
-			const def = getCatalogIndicator(overlay.id);
-			const vals = def ? def.params.map(p => indicatorParams(settings, overlay.id)[p.key] ?? p.defaultValue) : [];
-			const text = vals.length ? `${overlay.shortName}(${vals.join(',')})` : overlay.shortName;
-			const tag = element('span', 'legend-tag', text);
-			tag.style.color = overlay.plots[0]?.color ?? '#92959e';
-			indicatorLegend.append(tag);
-		}
-		if (settings.volume) indicatorLegend.append(element('span', 'legend-tag', '成交量'));
-	}
-	indicatorLegend.hidden = !hasTab || indicatorLegend.childElementCount === 0;
+	if (!collapsed) for (const def of mainIndicators) indicatorLegend.append(makeRow(def.id));
+	const indicatorCount = hasTab ? INDICATOR_CATALOG.filter(def => isIndicatorEnabled(settings, def.id)).length : 0;
+	if (indicatorCount) indicatorLegend.append(makeToggle(mainIndicators.length || indicatorCount));
+	indicatorLegend.hidden = !indicatorCount;
 
 	const activeSubPanes = activeOrder.filter(id => id !== 'price');
 	const activeSubSet = new Set(activeSubPanes);
@@ -597,22 +593,17 @@ function updateIndicatorLabels(): void {
 			subPaneLabels.set(id, labelEl);
 		}
 		labelEl.replaceChildren();
-		const paramValues = def.params.map(p => indicatorParams(settings, id)[p.key] ?? p.defaultValue);
-		const titleText = paramValues.length ? `${def.shortName} ${paramValues.join(' ')}` : def.shortName;
-		labelEl.append(element('span', '', titleText));
-		for (const plot of chart?.activeSubPanePlots(id) ?? []) {
-			if (plot.kind === 'histogram') continue;
-			const swatch = element('i');
-			swatch.style.backgroundColor = plot.color;
-			labelEl.append(swatch);
-		}
+		if (!collapsed) labelEl.append(makeRow(id));
+		// A maximized subpane keeps its own toggle so it can always be expanded.
+		if (lastChartLayout.maximizedPane === id) labelEl.append(makeToggle(1));
 		const bounds = lastChartLayout.panes[id];
-		labelEl.hidden = Boolean(bounds && !bounds.visible);
+		labelEl.hidden = Boolean(bounds && !bounds.visible) || (collapsed && lastChartLayout.maximizedPane !== id);
 		if (bounds) labelEl.style.top = `${bounds.top + 8}px`;
 
 		renderPaneCornerActions(id, `${def.shortName} 面板`, activeOrder);
 	}
 
+	updateIndicatorLegendValues(stageWrap, chart?.indicatorValues() ?? {});
 	const priceBounds = lastChartLayout.panes.price;
 	priceOverlay.hidden = !hasTab || Boolean(priceBounds && !priceBounds.visible);
 	syncPriceOverlayHeight();
@@ -648,6 +639,7 @@ function renderDetail(instrument?: Instrument): void {
 }
 
 function renderOhlc(candle: Candle): void {
+	updateIndicatorLegendValues(stageWrap, chart?.indicatorValues() ?? {});
 	ohlc.replaceChildren();
 	const direction = candle.close >= candle.open ? 'positive' : 'negative';
 	for (const [label, value] of [['开', candle.open], ['高', candle.high], ['低', candle.low], ['收', candle.close]] as const) {
