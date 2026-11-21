@@ -39,6 +39,13 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 	const reproject = (point: AnchorPoint): AnchorPoint => typeof point.time === 'number' && scale ? scale.project({ time: point.time, price: point.price }) : point;
 	return {
 		manager,
+		isReady: () => loaded,
+		addHorizontalLine(price: number): void {
+			const last = rows.at(-1);
+			if (!loaded || !scale || !last || !Number.isFinite(price) || price <= 0 || price > 1e15) return;
+			const drawing = manager.addDrawing('horizontal-line', [scale.project({ time: last.time, price })]);
+			manager.selectDrawing(drawing.id);
+		},
 		projectAnchors(anchors: readonly { time: number; price: number }[]): AnchorPoint[] {
 			const currentScale = scale;
 			if (!currentScale) throw new Error('行情尚未就绪');

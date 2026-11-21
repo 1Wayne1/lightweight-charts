@@ -1,0 +1,11 @@
+.price-axis-shortcut { --shortcut-size: 19px; position: absolute; z-index: 6; display: flex; align-items: center; height: var(--shortcut-size); color: #fff; font-weight: 400; pointer-events: none; }
+.price-axis-shortcut[hidden] { display: none; }
+.price-axis-shortcut-button { position: relative; display: flex; flex: 0 0 var(--shortcut-size); align-items: center; justify-content: center; width: var(--shortcut-size); height: var(--shortcut-size); padding: 2px; border-radius: 2px 0 0 2px; background: #363a45; color: inherit; pointer-events: auto; cursor: pointer; touch-action: manipulation; }
+.price-axis-shortcut-button > .icon { width: calc(var(--shortcut-size) - 4px); height: calc(var(--shortcut-size) - 4px); padding: 1px; border: 1px solid currentColor; border-radius: 50%; }
+.price-axis-shortcut-button:hover { background: #434651; }
+.price-axis-shortcut-button:active { color: #79a4ff; }
+.price-axis-shortcut-button:focus-visible { outline: 2px solid #5388ff; outline-offset: -2px; }
+.price-axis-shortcut-tooltip { position: absolute; right: calc(100% + 8px); top: 50%; transform: translateY(-50%); display: none; padding: 6px 9px; border-radius: 4px; background: #363a45; color: #f0f3fa; font-size: 11px; line-height: 16px; white-space: nowrap; pointer-events: none; }
+.price-axis-shortcut-button:hover .price-axis-shortcut-tooltip, .price-axis-shortcut-button:focus-visible .price-axis-shortcut-tooltip { display: block; }
+.price-axis-shortcut.is-touch .price-axis-shortcut-button::after { content: ''; position: absolute; width: 40px; height: 40px; right: 0; top: 50%; transform: translateY(-50%); }
+.price-axis-shortcut.is-touch .price-axis-shortcut-tooltip { display: none; }

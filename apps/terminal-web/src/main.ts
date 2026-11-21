@@ -16,6 +16,7 @@ import { migrateDemoWorkspace } from './data/workspace-migration';
 import { createMobileUI } from './mobile';
 import { element, icon, iconButton, unavailableButton } from './ui';
 import { createDrawingSession, type DrawingSession } from './drawings/session';
+import { createPriceAxisShortcut } from './drawings/price-axis-shortcut';
 import { createDrawingUI } from './drawings/ui';
 import './style.css';
 import './mobile.css';
@@ -38,6 +39,7 @@ try {
 }
 let chart: TerminalChart | undefined;
 let drawingSession: DrawingSession | undefined;
+let priceAxisShortcut: ReturnType<typeof createPriceAxisShortcut> | undefined;
 const provider = new BinanceProvider({
 	spotRest: import.meta.env.VITE_BINANCE_SPOT_REST || defaultEndpoints.spotRest,
 	perpetualRest: import.meta.env.VITE_BINANCE_PERPETUAL_REST || defaultEndpoints.perpetualRest,
@@ -657,6 +659,7 @@ function render(): void {
 	const version = ++renderVersion;
 	feed?.stop();
 	feed = undefined;
+	priceAxisShortcut?.destroy(); priceAxisShortcut = undefined;
 	drawingUI.attach();
 	drawingSession?.destroy(); drawingSession = undefined;
 	chart?.destroy();
@@ -723,6 +726,7 @@ function render(): void {
 	);
 	const currentDrawings = drawingSession;
 	drawingUI.attach(currentDrawings);
+	priceAxisShortcut = createPriceAxisShortcut(stageWrap, currentChart, currentDrawings);
 	currentChart.setMobileLayout(mobile.isMobile());
 	currentChart.chart.applyOptions({ crosshair: { mode: crosshairVisible ? CrosshairMode.Normal : CrosshairMode.Hidden } });
 	currentChart.setPriceFormat(priceTick(preference.instrument));
@@ -851,6 +855,7 @@ const onPageHide = (): void => {
 	stopQuotes?.(); stopQuotes = undefined; quoteSubscription = '';
 	catalogueRequest?.abort();
 	clearTimeout(quoteFlush); quoteFlush = undefined;
+	priceAxisShortcut?.destroy(); priceAxisShortcut = undefined;
 	drawingUI.attach();
 	drawingSession?.destroy(); drawingSession = undefined;
 	chart?.destroy(); chart = undefined;
