@@ -17,12 +17,23 @@ const button = (label: string, action: () => void, className = 'drawing-button')
 const lineSample = (width: number, style = 0) => {
 	const sample = element('span', 'drawing-line-sample'); sample.style.borderTopWidth = `${width}px`; sample.style.borderTopStyle = DASHES[style]; return sample;
 };
+const HEX_COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+function normalizeNativeHex(value: string): string {
+	const raw = value.trim();
+	if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
+	if (/^#[0-9a-fA-F]{8}$/.test(raw)) return raw.slice(0, 7).toLowerCase();
+	if (/^#[0-9a-fA-F]{3}$/.test(raw)) return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
+	return '#2962ff';
+}
 
 export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, getSession: () => DrawingSession | undefined, openObjects: () => void) {
 	let state: DrawingManagerState | undefined;
 	let signature = '';
 	let popup: HTMLDivElement | undefined;
 	let popupTrigger: HTMLElement | undefined;
+	let liveColorEdit: { drawingId: string; key: 'color' | 'fillColor' | 'textColor' | 'backgroundColor'; underline: HTMLElement; recorded: boolean } | undefined;
+	let applyingLiveColor = false;
+	let revertDialogPreview: (() => void) | undefined;
 	let dialogDrawingId: string | undefined;
 	let customPosition: { left: number; top: number } | undefined;
 	const manager = () => getSession()?.manager;
@@ -46,7 +57,7 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 
 	function closePopup(restoreFocus = false): void {
 		const trigger = popupTrigger;
-		popup?.remove(); popup = undefined; popupTrigger = undefined;
+		popup?.remove(); popup = undefined; popupTrigger = undefined; liveColorEdit = undefined;
 		trigger?.setAttribute('aria-expanded', 'false');
 		if (restoreFocus && trigger?.isConnected) trigger.focus();
 	}
@@ -65,28 +76,54 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		const rect = trigger.getBoundingClientRect(); placePopup(point?.x ?? rect.left, point?.y ?? rect.bottom + 6);
 		popup.querySelector<HTMLElement>('[aria-checked=true], button, input')?.focus();
 	}
-	function colorPicker(trigger: HTMLButtonElement, label: string, current: string, commit: (value: string) => void, opacity?: { value: number; max: number; commit: (value: number) => void }): void {
+	function colorPicker(trigger: HTMLButtonElement, label: string, current: string, onSelect: (value: string) => void, opacity?: { value: number; max: number; onSelect: (value: number) => void }): void {
 		showPopup(trigger, label, body => {
+			let selected = current;
+			const swatches: Array<{ value: string; node: HTMLButtonElement }> = [];
+			const custom = element('form', 'drawing-custom-color');
+			const nativePicker = element('input', 'drawing-native-color');
+			nativePicker.type = 'color'; nativePicker.value = normalizeNativeHex(current); nativePicker.setAttribute('aria-label', `${label}取色器`);
+			const hex = element('input'); hex.value = current; hex.setAttribute('aria-label', 'HEX 颜色'); hex.pattern = '#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})'; hex.required = true; hex.maxLength = 9;
+			const apply = button('应用', () => {}); apply.type = 'submit'; custom.append(nativePicker, hex, apply);
+
+			const applyLive = (next: string, source: 'swatch' | 'native' | 'hex'): void => {
+				selected = next;
+				for (const item of swatches) item.node.setAttribute('aria-pressed', String(item.value.toLowerCase() === selected.toLowerCase()));
+				if (source !== 'hex') hex.value = selected;
+				if (source !== 'native') nativePicker.value = normalizeNativeHex(selected);
+				onSelect(selected);
+			};
+
 			const palette = element('div', 'drawing-color-grid'); palette.setAttribute('role', 'group'); palette.setAttribute('aria-label', '预设颜色');
 			for (const value of COLORS) {
-				const swatch = button('', () => { closePopup(true); commit(value); }, 'drawing-color-swatch');
-				swatch.style.backgroundColor = value; swatch.setAttribute('aria-label', `颜色 ${value}`); swatch.setAttribute('aria-pressed', String(value.toLowerCase() === current.toLowerCase())); palette.append(swatch);
+				const swatch = button('', () => applyLive(value, 'swatch'), 'drawing-color-swatch');
+				swatch.style.backgroundColor = value; swatch.setAttribute('aria-label', `颜色 ${value}`); swatch.setAttribute('aria-pressed', String(value.toLowerCase() === current.toLowerCase()));
+				swatches.push({ value, node: swatch }); palette.append(swatch);
 			}
-			const custom = element('form', 'drawing-custom-color');
-			const hex = element('input'); hex.value = current; hex.setAttribute('aria-label', 'HEX 颜色'); hex.pattern = '#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})'; hex.required = true; hex.maxLength = 9;
-			const apply = button('应用', () => {}); apply.type = 'submit'; custom.append(hex, apply);
-			custom.onsubmit = event => { event.preventDefault(); if (custom.reportValidity()) { closePopup(true); commit(hex.value); } };
+			nativePicker.oninput = () => applyLive(nativePicker.value, 'native');
+			hex.oninput = () => {
+				const trimmed = hex.value.trim();
+				if (HEX_COLOR_RE.test(trimmed)) applyLive(trimmed, 'hex');
+			};
+			custom.onsubmit = event => { event.preventDefault(); if (custom.reportValidity()) { applyLive(hex.value.trim(), 'hex'); closePopup(true); } };
 			body.append(palette, custom);
 			if (opacity) {
 				const row = element('label', 'drawing-opacity'); const value = element('span', '', `不透明度 ${Math.round(opacity.value * 100)}%`);
 				const slider = element('input'); slider.type = 'range'; slider.min = '0'; slider.max = String(opacity.max); slider.step = '.01'; slider.value = String(opacity.value); slider.setAttribute('aria-label', label === '文字颜色' ? '文字不透明度' : '填充不透明度');
-				slider.oninput = () => { value.textContent = `不透明度 ${Math.round(Number(slider.value) * 100)}%`; };
-				slider.onchange = () => { const amount = Number(slider.value); closePopup(true); opacity.commit(amount); }; row.append(value, slider); body.append(row);
+				slider.oninput = () => {
+					const amount = Number(slider.value);
+					value.textContent = `不透明度 ${Math.round(amount * 100)}%`;
+					opacity.onSelect(amount);
+				};
+				row.append(value, slider); body.append(row);
 			}
 		});
 	}
 	function patch(options: Partial<DrawingStyleOptions>): void {
-		const drawing = manager()?.selectedDrawing(); if (drawing) manager()?.updateDrawingOptions(drawing.id, options);
+		const drawing = manager()?.selectedDrawing();
+		if (!drawing) return;
+		manager()?.updateDrawingOptions(drawing.id, options);
+		getSession()?.rememberStyle(drawing.type, options);
 	}
 	function action(name: IconName, label: string, run: () => void): HTMLButtonElement {
 		const node = iconButton(name, label, run); node.className = 'drawing-property-button';
@@ -122,12 +159,39 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 			if (tool.creation === 'path') action('check', '完成路径', () => manager()?.finishDrawing());
 			action('close', '退出绘图', () => manager()?.setActiveTool(null)); return;
 		}
+		const drawingId = drawing.id;
 		const profile = propertyProfile(drawing.type); const options = drawing.options();
 		const marker = element('span', 'drawing-object-marker'); marker.title = toolLabel(drawing.type); marker.append(toolIcon(drawing.type)); content.append(marker); divider();
 		function color(key: 'color' | 'fillColor' | 'textColor' | 'backgroundColor', label: string, name: IconName): void {
-			const control = action(name, label, () => colorPicker(control, label, options[key], value => patch({ [key]: value }), key === 'fillColor' ? { value: options.fillOpacity, max: 1, commit: value => patch({ fillOpacity: value }) } : key === 'textColor' ? { value: options.textOpacity, max: 1, commit: value => patch({ textOpacity: value }) } : undefined));
+			const underline = element('span', 'drawing-color-underline'); underline.style.backgroundColor = options[key];
+			const commitLive = (nextPatch: Partial<DrawingStyleOptions>): void => {
+				const active = manager()?.selectedDrawing();
+				if (!active || active.id !== drawingId) return;
+				const recordHistory = !liveColorEdit?.recorded;
+				if (liveColorEdit) liveColorEdit.recorded = true;
+				if (key in nextPatch && typeof nextPatch[key] === 'string') underline.style.backgroundColor = nextPatch[key];
+				applyingLiveColor = true;
+				try { manager()?.updateDrawingOptions(active.id, nextPatch, recordHistory); }
+				finally { applyingLiveColor = false; }
+				getSession()?.rememberStyle(active.type, nextPatch);
+			};
+			const control = action(name, label, () => {
+				const currentOpts = manager()?.selectedDrawing()?.options() ?? options;
+				colorPicker(
+					control,
+					label,
+					currentOpts[key],
+					value => commitLive({ [key]: value }),
+					key === 'fillColor'
+						? { value: currentOpts.fillOpacity, max: 1, onSelect: value => commitLive({ fillOpacity: value }) }
+						: key === 'textColor'
+							? { value: currentOpts.textOpacity, max: 1, onSelect: value => commitLive({ textOpacity: value }) }
+							: undefined
+				);
+				if (popup && popupTrigger === control) liveColorEdit = { drawingId, key, underline, recorded: false };
+			});
 			control.classList.add('drawing-color-button'); control.setAttribute('aria-haspopup', 'dialog'); control.setAttribute('aria-expanded', 'false');
-			const underline = element('span', 'drawing-color-underline'); underline.style.backgroundColor = options[key]; control.append(underline);
+			control.append(underline);
 		}
 		if (profile.stroke) color('color', profile.attached === 'mark' ? '标记颜色' : profile.annotation ? '边框颜色' : '线条颜色', 'brush');
 		if (profile.fill) color('fillColor', '填充颜色', 'layers');
@@ -171,8 +235,15 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 	function open(preferredTab?: string): void {
 		const drawing = manager()?.selectedDrawing(); const session = getSession(); if (!drawing || !session || dialog.open) return;
 		textEditor.close(); closePopup(); dialogDrawingId = drawing.id;
-		const profile = propertyProfile(drawing.type); const options = drawing.options();
+		const profile = propertyProfile(drawing.type); const options = structuredClone(drawing.options());
 		const draft = { color: options.color, fillColor: options.fillColor, textColor: options.textColor, backgroundColor: options.backgroundColor }; const fields = new Map<keyof DrawingStyleOptions, HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>();
+		let committed = false;
+		const previewOption = (partial: Partial<DrawingStyleOptions>): void => {
+			if (getSession() === session && session.manager.getDrawing(drawing.id)) drawing.applyOptions(partial);
+		};
+		revertDialogPreview = () => {
+			if (!committed && getSession() === session && session.manager.getDrawing(drawing.id)) drawing.applyOptions(options);
+		};
 		dialog.replaceChildren();
 		const heading = element('div', 'drawing-properties-heading'); heading.append(element('h2', '', toolLabel(drawing.type)), iconButton('close', '关闭绘图设置', () => dialog.close()));
 		const form = element('form', 'drawing-properties-form'); form.noValidate = true;
@@ -195,7 +266,7 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 			fields.set(key, input); row(panel, label, input);
 		}
 		function colorField(panel: HTMLElement, key: 'color' | 'fillColor' | 'textColor' | 'backgroundColor', label: string): void {
-			const control = button('', () => colorPicker(control, label, draft[key], value => { draft[key] = value; swatch.style.backgroundColor = value; }), 'drawing-settings-color');
+			const control = button('', () => colorPicker(control, label, draft[key], value => { draft[key] = value; swatch.style.backgroundColor = value; previewOption({ [key]: value }); }), 'drawing-settings-color');
 			control.setAttribute('aria-label', label); control.setAttribute('aria-haspopup', 'dialog'); const swatch = element('span'); swatch.style.backgroundColor = draft[key]; control.append(swatch, icon('chevron')); row(panel, label, control);
 		}
 		function selectField(panel: HTMLElement, key: 'lineStyle' | 'zOrder' | 'textAlign' | 'textPosition' | 'textOrientation', label: string, choices: readonly string[]): void {
@@ -228,7 +299,10 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 				const text = element('input'); text.type = 'text'; text.value = originalText ?? ''; text.maxLength = 10000; text.placeholder = '添加文字'; text.setAttribute('aria-label', `层级 ${value} 文字`);
 				const entry = { value: input, visible: checkbox, color, text, originalText }; levels!.push(entry); row.append(checkbox, input);
 				if (profile.levelColors) {
-					const swatch = button('', () => colorPicker(swatch, '层级颜色', entry.color, next => { entry.color = next; swatch.style.backgroundColor = next; }), 'drawing-level-color'); swatch.style.backgroundColor = color; swatch.setAttribute('aria-label', '层级颜色'); row.append(swatch);
+					const swatch = button('', () => colorPicker(swatch, '层级颜色', entry.color, next => {
+						entry.color = next; swatch.style.backgroundColor = next;
+						previewOption({ fibLevels: levels!.map(level => ({ value: Number(level.value.value), visible: level.visible.checked, color: level.color, ...(profile.attached === 'levels' ? { text: level.text.value } : level.originalText !== undefined ? { text: level.originalText } : {}) })) });
+					}), 'drawing-level-color'); swatch.style.backgroundColor = color; swatch.setAttribute('aria-label', '层级颜色'); row.append(swatch);
 				}
 				row.append(iconButton('close', '删除层级', () => { levels = levels!.filter(item => item !== entry); row.remove(); }));
 				if (profile.attached === 'levels') { row.classList.add('drawing-level-with-text'); row.append(text); }
@@ -294,7 +368,13 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 				if (pointsChanged && anchors.some(anchor => !Number.isFinite(anchor.time) || Math.abs(anchor.time) > 8e12)) throw new Error('请输入有效的 UTC 时间');
 				if (getSession() !== session || !session.manager.getDrawing(drawing.id)) { dialog.close(); return; }
 				const optionsChanged = Object.entries(patch).some(([key, value]) => JSON.stringify(value) !== JSON.stringify(options[key as keyof DrawingStyleOptions]));
-				if (optionsChanged || pointsChanged) session.manager.updateDrawing(drawing.id, { options: patch, points: pointsChanged ? session.projectAnchors(anchors) : undefined });
+				if (optionsChanged || pointsChanged) {
+					// Restore the pre-preview options before committing so undo captures the original state.
+					drawing.applyOptions(options);
+					session.manager.updateDrawing(drawing.id, { options: patch, points: pointsChanged ? session.projectAnchors(anchors) : undefined });
+					if (optionsChanged) session.rememberStyle(drawing.type, patch);
+				}
+				committed = true;
 				dialog.close(); if (patch.visible === false) session.manager.selectDrawing(null);
 			} catch (cause) { error.textContent = cause instanceof Error ? cause.message : '无法保存设置'; }
 		};
@@ -346,7 +426,13 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		event.preventDefault(); event.stopImmediatePropagation(); manager()?.selectDrawing(hit.drawing.id); textEditor.open(hit.drawing, hit.target);
 	};
 	overlay.addEventListener('pointerdown', onTextPointer, true);
-	dialog.addEventListener('close', () => { if (!dialog.open) dialogDrawingId = undefined; if (popup && dialog.contains(popup)) closePopup(); });
+	dialog.addEventListener('close', () => {
+		if (!dialog.open) {
+			revertDialogPreview?.(); revertDialogPreview = undefined;
+			dialogDrawingId = undefined;
+		}
+		if (popup && dialog.contains(popup)) closePopup();
+	});
 	document.addEventListener('pointerdown', onPointer, true); window.addEventListener('keydown', onKey, true);
 	overlay.addEventListener('dblclick', onDoubleClick); overlay.addEventListener('contextmenu', onContext);
 	return {
@@ -357,6 +443,11 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 			bar.hidden = !visible;
 			if (dialog.open && (!ready || dialogDrawingId !== next.selectedId)) dialog.close();
 			const nextSignature = JSON.stringify([next.activeTool, next.selectedId, next.selectedDrawing?.options()]);
+			if (applyingLiveColor && liveColorEdit && popup && visible && !next.activeTool && next.selectedId === liveColorEdit.drawingId && next.selectedDrawing) {
+				signature = nextSignature;
+				liveColorEdit.underline.style.backgroundColor = next.selectedDrawing.options()[liveColorEdit.key];
+				return;
+			}
 			if (signature !== nextSignature || !visible) {
 				const focusLabel = bar.contains(document.activeElement) ? document.activeElement?.getAttribute('aria-label') : null;
 				closePopup(); signature = nextSignature; renderBar();

@@ -38,6 +38,8 @@ export interface DrawingManagerOptions {
 	normalizeAnchor?: (point: AnchorPoint) => AnchorPoint;
 	/** Actual OHLCV rows for analytical drawing tools, supplied by the host. */
 	dataSource?: () => readonly DrawingBar[];
+	/** Supplies remembered per-tool default style options for newly drawn shapes and previews. */
+	defaultOptionsForTool?: (type: DrawingToolType) => Partial<DrawingStyleOptions> | undefined;
 	magnetMode?: MagnetMode;
 	stayInDrawingMode?: boolean;
 	keyboardShortcuts?: boolean;
@@ -295,11 +297,15 @@ export class DrawingManager {
 		if (recordHistory) {
 			this._history.push(this._serializeList());
 		}
+		const mergedOptions: Partial<DrawingStyleOptions> = {
+			...this._toolDefaultOptions(type),
+			...options,
+		};
 		const data: SerializedDrawing = {
 			id: generateDrawingId(),
 			type,
 			points: points.map(p => this._normalize(p)),
-			options,
+			options: mergedOptions,
 		};
 		if (type === 'anchored-text') {
 			const point = anchorToScreen(this._chart, this._series, data.points[0]);
@@ -446,6 +452,15 @@ export class DrawingManager {
 	}
 
 	private _normalize(point: AnchorPoint): AnchorPoint { return this._options.normalizeAnchor?.(point) ?? { ...point }; }
+
+	private _toolDefaultOptions(type: DrawingToolType): Partial<DrawingStyleOptions> {
+		const inherited = this._options.defaultOptionsForTool?.(type);
+		if (!inherited) return {};
+		return {
+			...inherited,
+			...(inherited.fibLevels ? { fibLevels: inherited.fibLevels.map(level => ({ ...level })) } : {}),
+		};
+	}
 
 	private _createInstance(data: SerializedDrawing): BaseDrawing {
 		const drawing = createDrawingInstance(data);
@@ -1033,7 +1048,7 @@ export class DrawingManager {
 				id: '__preview__',
 				type: this._activeTool,
 				points: previewPoints,
-				options: {},
+				options: this._toolDefaultOptions(this._activeTool),
 			});
 			this._previewDrawing.setPreview(true);
 			this._series.attachPrimitive(this._previewDrawing);

@@ -1,11 +1,13 @@
-import { DrawingManager, type AnchorPoint, type DrawingBar } from '@tradingview/lwc-plugin-drawing-tools';
+import { DrawingManager, type AnchorPoint, type DrawingBar, type DrawingStyleOptions, type DrawingToolType } from '@tradingview/lwc-plugin-drawing-tools';
 import type { Candle } from '@terminal/domain';
 import type { TerminalChart } from '../chart';
 import { DrawingTimeScale } from './coordinates';
 import { DrawingRepository, reconcileDrawings, restoreDrawings, type DrawingStore } from './storage';
+import { DrawingStyleDefaultsRepository } from './style-defaults';
 
 // Keep unsaved edits available when storage fails and the user changes instruments.
 const recovery = new Map<string, DrawingStore>();
+const sharedStyleDefaults = new DrawingStyleDefaultsRepository(typeof localStorage !== 'undefined' ? localStorage : undefined);
 export function createDrawingSession(chart: TerminalChart, key: string, interval: number, onStatus: (message: string, error: boolean) => void, onReady?: () => void) {
 	let scale: DrawingTimeScale | undefined;
 	let rows: DrawingBar[] = [];
@@ -20,6 +22,7 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 	const manager = new DrawingManager(chart.chart, chart.series, {
 		normalizeAnchor: point => scale?.canonical(point) ?? point,
 		dataSource: () => rows,
+		defaultOptionsForTool: type => sharedStyleDefaults.get(type),
 	});
 	const save = (): void => {
 		clearTimeout(timer); timer = undefined;
@@ -40,6 +43,9 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 	return {
 		manager,
 		isReady: () => loaded,
+		rememberStyle(type: DrawingToolType, options: Partial<DrawingStyleOptions>): void {
+			sharedStyleDefaults.remember(type, options);
+		},
 		addHorizontalLine(price: number): void {
 			const last = rows.at(-1);
 			if (!loaded || !scale || !last || !Number.isFinite(price) || price <= 0 || price > 1e15) return;

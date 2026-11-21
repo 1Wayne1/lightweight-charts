@@ -24,8 +24,9 @@
 .drawing-color-swatch { height: 25px; min-width: 0; border: 1px solid #ffffff26; border-radius: 3px; }
 .drawing-color-swatch:hover, .drawing-color-swatch[aria-pressed=true] { outline: 2px solid #d1d4dc; outline-offset: 2px; }
 .drawing-color-swatch:focus-visible { outline: 2px solid #5388ff; outline-offset: 2px; }
-.drawing-custom-color { display: flex; gap: 6px; padding: 8px 4px 4px; border-top: 1px solid #363a45; }
-.drawing-custom-color input { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid #434651; border-radius: 4px; background: transparent; color: inherit; font-size: 13px; }
+.drawing-custom-color { display: flex; align-items: center; gap: 6px; padding: 8px 4px 4px; border-top: 1px solid #363a45; }
+.drawing-custom-color input[type=color] { width: 32px; height: 30px; flex-shrink: 0; padding: 2px; border: 1px solid #434651; border-radius: 4px; background: transparent; cursor: pointer; }
+.drawing-custom-color input:not([type=color]) { width: 100%; min-width: 0; padding: 6px 8px; border: 1px solid #434651; border-radius: 4px; background: transparent; color: inherit; font-size: 13px; }
 .drawing-opacity { display: flex; flex-direction: column; gap: 8px; padding: 12px 4px 4px; font-size: 12px; }
 .drawing-opacity input { width: 100%; accent-color: #2962ff; }
 .drawing-property-menu-item { display: flex; gap: 14px; align-items: center; width: 100%; min-height: 36px; padding: 7px 10px; border-radius: 3px; text-align: left; font-size: 13px; color: inherit; }

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DrawingTimeScale } from '../src/drawings/coordinates.ts';
 import { DrawingRepository, drawingStorageKey, parseDrawingStore, reconcileDrawings, restoreDrawings } from '../src/drawings/storage.ts';
+import { DrawingStyleDefaultsRepository, extractRememberableStyle, parseDrawingStyleDefaultsStore } from '../src/drawings/style-defaults.ts';
 import { DrawingHistory, TOOL_DEFINITIONS, BASE_DRAWING_OPTIONS } from '@tradingview/lwc-plugin-drawing-tools';
 const key = 'binance:spot:BTC-USDT';
 const empty = () => ({ schemaVersion: 1, instrumentKey: key, documents: [] });
@@ -198,4 +199,57 @@ test('attached notes and per-level text survive timeframe, history, deletion and
 	for (const [field, value] of [['textBold', 'yes'], ['textOpacity', 1.1], ['textAlign', 'outside'], ['textOrientation', 'diagonal'], ['attachedText', 'x'.repeat(10001)], ['fibLevels', [{ value: 1, color: '#fff', visible: true, text: 123 }]]]) {
 		const bad = structuredClone(stored); bad.documents[0].style[field] = value; assert.throws(() => parseDrawingStore(bad, key));
 	}
+});
+
+test('drawing style defaults persist per tool, inherit on new drawings, and strip instance fields', async () => {
+	const { DrawingManager } = await import('@tradingview/lwc-plugin-drawing-tools');
+	const storage = memory();
+	const defaults = new DrawingStyleDefaultsRepository(storage);
+	defaults.remember('trend-line', {
+		color: '#089981', lineWidth: 4, lineStyle: 2,
+		locked: true, visible: false, text: '临时文字', attachedText: '实例备注', anchorX: 0.5, anchorY: 0.5,
+	});
+	defaults.remember('fib-retracement', {
+		fibLevels: [{ value: 0.618, color: '#ff9800', visible: true, text: '单次标注' }],
+	});
+	assert.deepEqual(extractRememberableStyle({ locked: true, visible: false, attachedText: 'note' }), {});
+	const reloaded = new DrawingStyleDefaultsRepository(storage);
+	assert.deepEqual(reloaded.get('trend-line'), { color: '#089981', lineWidth: 4, lineStyle: 2 });
+	assert.deepEqual(reloaded.get('fib-retracement'), { fibLevels: [{ value: 0.618, color: '#ff9800', visible: true }] });
+	assert.equal(reloaded.get('horizontal-line'), undefined);
+	assert.throws(() => parseDrawingStyleDefaultsStore({ schemaVersion: 2, styles: {} }));
+	assert.throws(() => parseDrawingStyleDefaultsStore({ schemaVersion: 1, styles: { 'not-a-tool': { color: '#fff' } } }));
+
+	// DrawingManager applies remembered defaults to new drawings while letting explicit options override.
+	class Node extends EventTarget {
+		style = {}; children = []; tagName = 'DIV';
+		querySelector() { return {}; }
+		closest() { return null; }
+		getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; }
+	}
+	const savedWindow = globalThis.window; const savedElement = globalThis.HTMLElement;
+	globalThis.window = new EventTarget(); globalThis.HTMLElement = Node;
+	try {
+		const container = new Node(); const pane = new Node(); const cell = new Node(); const surface = new Node();
+		pane.children = [cell]; cell.style.position = 'relative'; cell.firstElementChild = surface;
+		let opts = { crosshair: { mode: 0 }, handleScroll: true, handleScale: true };
+		const timescale = { coordinateToLogical: x => x / 20, logicalToCoordinate: x => x * 20, coordinateToTime: x => 1000 + x / 20 * 60, timeToCoordinate: t => (t - 1000) / 60 * 20, width: () => 800 };
+		const chart = { options: () => opts, applyOptions: next => opts = { ...opts, ...next }, chartElement: () => container, timeScale: () => timescale };
+		const paneApi = { getHTMLElement: () => pane, getHeight: () => 600 };
+		const series = { priceToCoordinate: v => v, coordinateToPrice: v => v, getPane: () => paneApi, priceFormatter: () => ({ format: String }), subscribeDataChanged() {}, unsubscribeDataChanged() {}, attachPrimitive(p) { p.attached({ chart, series, requestUpdate() {} }); }, detachPrimitive(p) { p.detached(); } };
+		const manager = new DrawingManager(chart, series, {
+			normalizeAnchor: p => scale.canonical(p),
+			defaultOptionsForTool: type => reloaded.get(type),
+		});
+		const created = manager.addDrawing('trend-line', [scale.canonical({ logical: 1, price: 100 }), scale.canonical({ logical: 2, price: 110 })]);
+		assert.equal(created.options().color, '#089981');
+		assert.equal(created.options().lineWidth, 4);
+		assert.equal(created.options().lineStyle, 2);
+		assert.equal(created.options().locked, false);
+		assert.equal(created.options().visible, true);
+		const overridden = manager.addDrawing('trend-line', [scale.canonical({ logical: 1, price: 100 }), scale.canonical({ logical: 2, price: 110 })], { color: '#f23645' });
+		assert.equal(overridden.options().color, '#f23645');
+		assert.equal(overridden.options().lineWidth, 4);
+		manager.destroy();
+	} finally { globalThis.window = savedWindow; globalThis.HTMLElement = savedElement; }
 });
