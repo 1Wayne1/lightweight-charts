@@ -11,6 +11,7 @@ import {
 	PrimitivePaneViewZOrder,
 	SeriesType,
 } from 'lightweight-charts';
+import { attachedTextPlacements, paintAttachedText, textTargetContains, type AttachedTextTarget } from './attached-text';
 import { PluginBase } from '@tradingview/lwc-toolkit/plugin-base';
 import {
 	anchorToScreen,
@@ -155,6 +156,7 @@ class DrawingPaneView implements IPrimitivePaneView {
 					return;
 				}
 				this._source.draw(target, utils);
+				this._source.drawAttachedText(target);
 				if (this._source.shouldDrawAnchors()) {
 					drawAnchorHandles(
 						target,
@@ -185,6 +187,7 @@ export abstract class BaseDrawing extends PluginBase {
 	protected _screenPoints: (ScreenPoint | null)[] = [];
 	protected _options: DrawingStyleOptions;
 
+	private _textTargets: AttachedTextTarget[] = [];
 	private readonly _paneViews: DrawingPaneView[];
 	protected _priceAxisViews: DrawingAxisLabelView[] = [];
 	protected _timeAxisViews: DrawingAxisLabelView[] = [];
@@ -410,7 +413,7 @@ export abstract class BaseDrawing extends PluginBase {
 		return this._timeAxisPaneViews;
 	}
 
-	public hitTest(x: number, y: number): PrimitiveHoveredItem | null {
+	public hitTest(x: number, y: number, hitSlop: number = 0): PrimitiveHoveredItem | null {
 		if (!this.isRenderVisible() || this._isPreview) {
 			return null;
 		}
@@ -424,7 +427,7 @@ export abstract class BaseDrawing extends PluginBase {
 				const sp = this._screenPoints[i];
 				if (!sp) continue;
 				const dist = distancePointToPoint(point, sp);
-				if (dist <= ANCHOR_HIT_RADIUS && dist < bestAnchorDist) {
+				if (dist <= ANCHOR_HIT_RADIUS + hitSlop && dist < bestAnchorDist) {
 					bestAnchorDist = dist;
 					bestAnchorIdx = i;
 				}
@@ -445,7 +448,7 @@ export abstract class BaseDrawing extends PluginBase {
 		}
 
 		// 2. Body hit test delegated to concrete tool
-		const bodyHit = this.hitTestBody(point);
+		const bodyHit = this.textTargetAt(point) ? { distance: 0, priority: 1, cursorStyle: 'text' } : this.hitTestBody(point, hitSlop);
 		if (!bodyHit) {
 			return null;
 		}
@@ -463,6 +466,21 @@ export abstract class BaseDrawing extends PluginBase {
 		};
 	}
 
+	public attachedTextTargets(): readonly AttachedTextTarget[] { return this._textTargets; }
+
+	public textTargetAt(point: ScreenPoint): AttachedTextTarget | undefined {
+		if (!this.isRenderVisible() || !this._options.showText || this._isPreview) return undefined;
+		return this._textTargets.find(target => (!target.placeholder || this._selected) && textTargetContains(target, point));
+	}
+
+	public drawAttachedText(target: CanvasRenderingTarget2D): void {
+		this._textTargets = [];
+		target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+			const placements = attachedTextPlacements(this.type, { points: this._screenPoints, anchors: this._points, options: this._options, ...mediaSize, selected: this._selected && !this._isPreview, priceToY: price => this.seriesOrNull()?.priceToCoordinate(price) ?? null });
+			this._textTargets = paintAttachedText(context, placements, this._options, mediaSize.width, mediaSize.height);
+		});
+	}
+
 	public abstract draw(target: CanvasRenderingTarget2D, utils?: DrawingUtils): void;
-	protected abstract hitTestBody(point: ScreenPoint): BodyHitResult | null;
+	protected abstract hitTestBody(point: ScreenPoint, hitSlop?: number): BodyHitResult | null;
 }

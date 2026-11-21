@@ -57,6 +57,10 @@ export class DrawingHistory {
 		return cloneDrawings(next);
 	}
 
+	public mapPoints(map: (point: import('./types').AnchorPoint) => import('./types').AnchorPoint): void {
+		for (const stack of [this._undoStack, this._redoStack]) for (const state of stack) for (const drawing of state) drawing.points = drawing.points.map(map);
+	}
+
 	public clear(): void {
 		this._undoStack = [];
 		this._redoStack = [];

@@ -136,13 +136,13 @@ export class ParallelChannelDrawing extends BaseDrawing {
 		return distancePointToSegment(p, a, b);
 	}
 
-	protected hitTestBody(point: ScreenPoint): BodyHitResult | null {
+	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		const p2 = this._screenPoints[1];
 		const p3 = this._screenPoints[2];
 		if (!p1 || !p2) return null;
 
-		const tol = LINE_HIT_TOLERANCE + this._options.lineWidth / 2;
+		const tol = LINE_HIT_TOLERANCE + hitSlop + this._options.lineWidth / 2;
 		if (!p3) {
 			const d = this._lineDist(point, p1, p2);
 			return d <= tol ? { distance: d, priority: 1, cursorStyle: 'grab' } : null;

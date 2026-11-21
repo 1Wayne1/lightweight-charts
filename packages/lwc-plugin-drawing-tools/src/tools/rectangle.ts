@@ -105,13 +105,13 @@ export class RectangleDrawing extends BaseDrawing {
 		});
 	}
 
-	protected hitTestBody(point: ScreenPoint): BodyHitResult | null {
+	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		const p2 = this._screenPoints[1];
 		if (!p1 || !p2) return null;
 
 		const borderDist = distanceToRectBorder(point, p1, p2);
-		if (borderDist <= LINE_HIT_TOLERANCE + this._options.lineWidth / 2) {
+		if (borderDist <= LINE_HIT_TOLERANCE + hitSlop + this._options.lineWidth / 2) {
 			return { distance: borderDist, priority: 1, cursorStyle: 'grab' };
 		}
 		if (pointInRect(point, p1, p2)) {

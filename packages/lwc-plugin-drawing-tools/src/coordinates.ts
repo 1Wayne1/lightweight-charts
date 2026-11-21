@@ -46,7 +46,7 @@ export function anchorToScreen(
 ): ScreenPoint | null {
 	const timeScale = chart.timeScale();
 	let x: Coordinate | null = null;
-	if (anchor.time !== undefined) {
+	if (anchor.time !== undefined && !anchor.logicalIsExact) {
 		x = timeScale.timeToCoordinate(anchor.time);
 	}
 	if (x === null) {
@@ -61,7 +61,7 @@ export function anchorToScreen(
 
 export function anchorToX(chart: IChartApi, anchor: AnchorPoint): number | null {
 	const timeScale = chart.timeScale();
-	if (anchor.time !== undefined) {
+	if (anchor.time !== undefined && !anchor.logicalIsExact) {
 		const byTime = timeScale.timeToCoordinate(anchor.time);
 		if (byTime !== null) {
 			return byTime;

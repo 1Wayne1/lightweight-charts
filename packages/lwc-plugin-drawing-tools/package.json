@@ -33,7 +33,7 @@
 		"dev": "vite --config src/vite.config.js",
 		"build": "tsc && node compile.mjs",
 		"typecheck": "tsc --noEmit",
-		"test": "node --test tests/*.test.ts"
+		"test": "node --import tsx --test tests/*.test.ts"
 	},
 	"peerDependencies": {
 		"lightweight-charts": "^5.0.0"

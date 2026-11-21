@@ -1,6 +1,9 @@
 import type { LineStyle, Logical, PrimitivePaneViewZOrder, Time } from 'lightweight-charts';
 
+import type { ExtendedToolType } from './tools/catalog';
+
 export type DrawingToolType =
+	| ExtendedToolType
 	| 'trend-line'
 	| 'ray'
 	| 'horizontal-line'
@@ -21,6 +24,8 @@ export interface AnchorPoint {
 	 * Supports fractional values and future/whitespace positions past the last bar.
 	 */
 	logical: Logical;
+	/** Host already reprojects canonical UTC time, including fractional bars. */
+	logicalIsExact?: boolean;
 	/**
 	 * Optional bar time for re-anchoring when historical data is prepended.
 	 * Omitted when the anchor sits in whitespace/future space.
@@ -36,6 +41,7 @@ export interface ScreenPoint {
 }
 
 export interface FibLevelConfig {
+	text?: string;
 	value: number;
 	color: string;
 	visible: boolean;
@@ -52,6 +58,15 @@ export interface DrawingStyleOptions {
 	showLabels: boolean;
 	showMidline: boolean;
 	text: string;
+	/** Optional object note; separate from legacy primary annotation text. */
+	attachedText: string;
+	showText: boolean;
+	textBold: boolean;
+	textItalic: boolean;
+	textOpacity: number;
+	textAlign: 'left' | 'center' | 'right';
+	textPosition: 'top' | 'middle' | 'bottom';
+	textOrientation: 'horizontal' | 'vertical';
 	fontSize: number;
 	textColor: string;
 	backgroundColor: string;
@@ -59,6 +74,14 @@ export interface DrawingStyleOptions {
 	locked: boolean;
 	visible: boolean;
 	zOrder: PrimitivePaneViewZOrder;
+	/** Position sizing and analytical tool parameters. */
+	accountSize: number;
+	riskPercent: number;
+	deviations: number;
+	profileRows: number;
+	/** Normalized viewport location for anchored text only. */
+	anchorX?: number;
+	anchorY?: number;
 }
 
 export interface SerializedDrawing {
@@ -94,6 +117,8 @@ export interface ToolDefinition {
 	label: string;
 	shortLabel: string;
 	pointCount: number;
+	group?: string;
+	creation?: 'points' | 'path' | 'freehand';
 	capabilities: ToolCapabilities;
 	defaultOptions: Partial<DrawingStyleOptions>;
 }
@@ -119,6 +144,14 @@ export const BASE_DRAWING_OPTIONS: DrawingStyleOptions = {
 	showLabels: true,
 	showMidline: true,
 	text: 'Text',
+	attachedText: '',
+	showText: true,
+	textBold: false,
+	textItalic: false,
+	textOpacity: 1,
+	textAlign: 'center',
+	textPosition: 'top',
+	textOrientation: 'vertical',
 	fontSize: 13,
 	textColor: '#FFFFFF',
 	backgroundColor: '#2962FF',
@@ -126,6 +159,10 @@ export const BASE_DRAWING_OPTIONS: DrawingStyleOptions = {
 	locked: false,
 	visible: true,
 	zOrder: 'top',
+	accountSize: 10000,
+	riskPercent: 1,
+	deviations: 2,
+	profileRows: 24,
 };
 
 export function encodeExternalId(hit: HitPart): string {

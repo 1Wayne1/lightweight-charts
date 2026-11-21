@@ -1,3 +1,4 @@
+import { drawingTextFont } from '../attached-text';
 import { CanvasRenderingTarget2D } from 'fancy-canvas';
 import { DrawingUtils } from 'lightweight-charts';
 import { BaseDrawing, BodyHitResult } from '../base-drawing';
@@ -63,7 +64,7 @@ export class TextAnnotationDrawing extends BaseDrawing {
 
 		const opts = this._options;
 		const lines = (opts.text || 'Text').split('\n');
-		const fontSize = Math.max(10, Math.min(36, opts.fontSize));
+		const fontSize = Math.max(8, Math.min(72, opts.fontSize));
 		const lineHeight = Math.round(fontSize * 1.38);
 		const padX = 10;
 		const padY = 6;
@@ -71,7 +72,7 @@ export class TextAnnotationDrawing extends BaseDrawing {
 		target.useMediaCoordinateSpace(scope => {
 			const ctx = scope.context;
 			ctx.save();
-			ctx.font = `500 ${fontSize}px -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, sans-serif`;
+			ctx.font = drawingTextFont(opts);
 
 			let maxW = 36;
 			for (const line of lines) {
@@ -94,6 +95,7 @@ export class TextAnnotationDrawing extends BaseDrawing {
 			ctx.lineWidth = this.isSelected() ? 1.75 : 1;
 			ctx.stroke();
 
+			ctx.globalAlpha = opts.textOpacity;
 			ctx.fillStyle = opts.textColor;
 			ctx.textAlign = 'left';
 			ctx.textBaseline = 'top';
@@ -105,14 +107,15 @@ export class TextAnnotationDrawing extends BaseDrawing {
 		});
 	}
 
-	protected hitTestBody(point: ScreenPoint): BodyHitResult | null {
+	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const box = this._cachedBounds;
 		if (!box) return null;
+		const pad = 2 + hitSlop;
 		if (
-			point.x >= box.x - 2 &&
-			point.x <= box.x + box.width + 2 &&
-			point.y >= box.y - 2 &&
-			point.y <= box.y + box.height + 2
+			point.x >= box.x - pad &&
+			point.x <= box.x + box.width + pad &&
+			point.y >= box.y - pad &&
+			point.y <= box.y + box.height + pad
 		) {
 			const cx = box.x + box.width / 2;
 			const cy = box.y + box.height / 2;

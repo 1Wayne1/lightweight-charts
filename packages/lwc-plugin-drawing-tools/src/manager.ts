@@ -14,6 +14,8 @@ import {
 	shiftAnchor,
 } from './coordinates';
 import { snapAngle45 } from './geometry';
+import { ExtendedDrawing } from './tools/extended-drawing';
+import type { DrawingBar } from './tools/extended-geometry';
 import { DrawingHistory } from './history';
 import {
 	createDrawingInstance,
@@ -32,6 +34,10 @@ import {
 } from './types';
 
 export interface DrawingManagerOptions {
+	/** Converts newly edited logical anchors to the host's canonical time coordinates. */
+	normalizeAnchor?: (point: AnchorPoint) => AnchorPoint;
+	/** Actual OHLCV rows for analytical drawing tools, supplied by the host. */
+	dataSource?: () => readonly DrawingBar[];
 	magnetMode?: MagnetMode;
 	stayInDrawingMode?: boolean;
 	keyboardShortcuts?: boolean;
@@ -67,6 +73,7 @@ interface DragSession {
 	startLogical: number;
 	startPrice: number;
 	origPoints: AnchorPoint[];
+	origOptions: DrawingStyleOptions;
 	preDragSnapshot: SerializedDrawing[];
 	didMove: boolean;
 }
@@ -91,6 +98,7 @@ function isEditableElement(target: EventTarget | null): boolean {
 
 export class DrawingManager {
 	private readonly _chart: IChartApi;
+	private readonly _options: DrawingManagerOptions;
 	private readonly _series: ISeriesApi<SeriesType>;
 	private readonly _history: DrawingHistory;
 	private readonly _keyboardEnabled: boolean;
@@ -112,6 +120,9 @@ export class DrawingManager {
 	private _drag: DragSession | null = null;
 	private _restoreChartControls: (() => void) | null = null;
 	private _creationPointerId: number | null = null;
+	private _creationDownScreen: ScreenPoint | null = null;
+	private _creationDragged: boolean = false;
+	private _creationLastAnchor: AnchorPoint | null = null;
 
 	private readonly _stateListeners: Set<StateChangeListener> = new Set();
 	private readonly _textEditListeners: Set<TextEditListener> = new Set();
@@ -124,6 +135,7 @@ export class DrawingManager {
 		options: DrawingManagerOptions = {}
 	) {
 		this._chart = chart;
+		this._options = options;
 		this._series = series;
 		this._magnetMode = options.magnetMode ?? 'off';
 		this._stayInDrawingMode = options.stayInDrawingMode ?? false;
@@ -181,6 +193,7 @@ export class DrawingManager {
 		if (this._activeTool === tool) return;
 		this._cancelDraft();
 		this._activeTool = tool;
+		if (tool) this._suspendControls(); else this._restoreControls();
 		if (tool !== null) {
 			this._setSelectedInternal(null);
 		}
@@ -204,6 +217,25 @@ export class DrawingManager {
 
 	public getDrawing(id: string): BaseDrawing | null {
 		return this._drawingMap.get(id) ?? null;
+	}
+
+	/** Resolve an object at viewport coordinates for host settings and context menus. */
+	public drawingAt(clientX: number, clientY: number): BaseDrawing | null {
+		const point = this._panePoint(clientX, clientY);
+		return point ? this._hitTestAll(point.x, point.y)?.drawing ?? null : null;
+	}
+
+	/** Convert pane-local note geometry for the host's inline editor. */
+	public textTargetAt(clientX: number, clientY: number) {
+		const point = this._panePoint(clientX, clientY);
+		const drawing = point ? this._hitTestAll(point.x, point.y)?.drawing : null;
+		const target = drawing && point ? drawing.textTargetAt(point) : undefined;
+		return drawing && target ? { drawing, target } : null;
+	}
+
+	public paneToClient(point: ScreenPoint): ScreenPoint {
+		const box = paneContentElement(this._series.getPane())?.getBoundingClientRect();
+		return { x: point.x + (box?.left ?? 0), y: point.y + (box?.top ?? 0) };
 	}
 
 	public magnetMode(): MagnetMode {
@@ -266,10 +298,14 @@ export class DrawingManager {
 		const data: SerializedDrawing = {
 			id: generateDrawingId(),
 			type,
-			points: points.map(p => ({ ...p })),
+			points: points.map(p => this._normalize(p)),
 			options,
 		};
-		const drawing = createDrawingInstance(data);
+		if (type === 'anchored-text') {
+			const point = anchorToScreen(this._chart, this._series, data.points[0]);
+			if (point) Object.assign(data.options, { anchorX: point.x / this._chart.timeScale().width(), anchorY: point.y / this._series.getPane().getHeight() });
+		}
+		const drawing = this._createInstance(data);
 		drawing.setGlobalVisible(this._drawingsVisible);
 		this._drawings.push(drawing);
 		this._drawingMap.set(drawing.id, drawing);
@@ -284,12 +320,22 @@ export class DrawingManager {
 		options: Partial<DrawingStyleOptions>,
 		recordHistory: boolean = true
 	): void {
+		this.updateDrawing(id, { options }, recordHistory);
+	}
+
+	/** Commit a settings form, including anchors, as a single undoable edit. */
+	public updateDrawing(
+		id: string,
+		patch: { options?: Partial<DrawingStyleOptions>; points?: readonly AnchorPoint[] },
+		recordHistory: boolean = true
+	): void {
 		const drawing = this._drawingMap.get(id);
 		if (!drawing) return;
 		if (recordHistory) {
 			this._history.push(this._serializeList());
 		}
-		drawing.applyOptions(options);
+		if (patch.points) drawing.setPoints(patch.points.map(point => this._normalize(point)));
+		if (patch.options) drawing.applyOptions(patch.options);
 		this._emitState();
 	}
 
@@ -371,7 +417,7 @@ export class DrawingManager {
 
 	public requestTextEdit(id: string): void {
 		const drawing = this._drawingMap.get(id);
-		if (!drawing || drawing.type !== 'text') return;
+		if (!drawing || !getToolDefinition(drawing.type).capabilities.hasText) return;
 		const pt = drawing.points()[0];
 		const sp = pt ? anchorToScreen(this._chart, this._series, pt) : null;
 		for (const listener of this._textEditListeners) {
@@ -399,6 +445,43 @@ export class DrawingManager {
 		this._textEditListeners.clear();
 	}
 
+	private _normalize(point: AnchorPoint): AnchorPoint { return this._options.normalizeAnchor?.(point) ?? { ...point }; }
+
+	private _createInstance(data: SerializedDrawing): BaseDrawing {
+		const drawing = createDrawingInstance(data);
+		if (drawing instanceof ExtendedDrawing && this._options.dataSource) drawing.setDataSource(this._options.dataSource);
+		return drawing;
+	}
+
+	/** Finish path/freehand creation. Paths can also be completed with Enter or a double click. */
+	public finishDrawing(): void {
+		if (!this._activeTool) return;
+		const definition = getToolDefinition(this._activeTool);
+		if (this._draftPoints.length < (definition.pointCount || 2)) return;
+		const type = this._activeTool;
+		const points = this._draftPoints.filter((point, i, list) => i === 0 || point.logical !== list[i - 1].logical || point.price !== list[i - 1].price);
+		if (points.length < (definition.pointCount || 2)) return;
+		this._cancelDraft();
+		const created = this.addDrawing(type, points);
+		this._setSelectedInternal(created.id);
+		if (!this._stayInDrawingMode) { this._activeTool = null; this._restoreControls(); }
+		this._updatePaneCursor(); this._emitState();
+		if (definition.capabilities.hasText) this.requestTextEdit(created.id);
+	}
+
+	/** Finish edits against the old time scale before the host replaces its market data. */
+	public prepareDataChange(): void { this._endDrag(true); this._cancelDraft(); }
+
+	/** Reproject current drawings AND history after a history prepend. No persistence change. */
+	public reprojectAnchors(map: (point: AnchorPoint) => AnchorPoint): void {
+		for (const drawing of this._drawings) drawing.setPoints(drawing.points().map(map));
+		this._history.mapPoints(map);
+	}
+
+	public refreshData(): void {
+		for (const drawing of this._drawings) drawing.setPoints([...drawing.points()]);
+	}
+
 	private _serializeList(): SerializedDrawing[] {
 		return this._drawings.map(d => d.serialize());
 	}
@@ -415,7 +498,7 @@ export class DrawingManager {
 		const prevSelected = this._selectedId;
 		this._detachAllInternal();
 		for (const item of list) {
-			const drawing = createDrawingInstance(item);
+			const drawing = this._createInstance(item);
 			drawing.setGlobalVisible(this._drawingsVisible);
 			this._drawings.push(drawing);
 			this._drawingMap.set(drawing.id, drawing);
@@ -460,6 +543,16 @@ export class DrawingManager {
 		addEl(chartEl, 'pointerdown', this._onPointerDown, true);
 		addEl(chartEl, 'dblclick', this._onDoubleClick, false);
 
+		// On iOS Safari, changing touch-action inside pointerdown does not take effect for the in-flight gesture.
+		// Prevent default single-finger touchmove only while actively dragging a drawing or aiming a creation anchor.
+		const onTouchMove = (ev: TouchEvent) => {
+			if ((this._drag !== null || this._creationPointerId !== null) && ev.touches.length === 1 && ev.cancelable) {
+				ev.preventDefault();
+			}
+		};
+		chartEl.addEventListener('touchmove', onTouchMove, { capture: true, passive: false });
+		this._unsubscribers.push(() => chartEl.removeEventListener('touchmove', onTouchMove, { capture: true }));
+
 		const onMove = (ev: PointerEvent) => this._onPointerMove(ev);
 		const onUp = (ev: PointerEvent) => this._onPointerUp(ev);
 		window.addEventListener('pointermove', onMove);
@@ -476,6 +569,36 @@ export class DrawingManager {
 			window.addEventListener('keydown', onKeyDown);
 			this._unsubscribers.push(() => window.removeEventListener('keydown', onKeyDown));
 		}
+	}
+
+	private _capturePointer(pointerId: number): void {
+		try {
+			this._chart.chartElement().setPointerCapture?.(pointerId);
+		} catch {
+			// Safari may reject pointer capture on synthetic or ended touch pointers.
+		}
+	}
+
+	private _releasePointer(pointerId: number): void {
+		try {
+			const element = this._chart.chartElement();
+			if (element.hasPointerCapture?.(pointerId)) {
+				element.releasePointerCapture(pointerId);
+			}
+		} catch {
+			// Ignore if capture was already released.
+		}
+	}
+
+	private _panePointClamped(clientX: number, clientY: number): ScreenPoint | null {
+		const paneEl = paneContentElement(this._series.getPane());
+		if (!paneEl) return null;
+		const box = paneEl.getBoundingClientRect();
+		if (box.width <= 0 || box.height <= 0) return null;
+		return {
+			x: Math.max(0, Math.min(box.width, clientX - box.left)),
+			y: Math.max(0, Math.min(box.height, clientY - box.top)),
+		};
 	}
 
 	private _panePoint(clientX: number, clientY: number): ScreenPoint | null {
@@ -504,9 +627,13 @@ export class DrawingManager {
 		if (this._restoreChartControls !== null) return;
 		const { handleScroll: scroll, handleScale: scale } = this._chart.options();
 		const savedScroll = typeof scroll === 'boolean' ? scroll : cloneReadonly(scroll);
+		const pane = paneContentElement(this._series.getPane());
+		const touchAction = pane?.style.touchAction;
+		if (pane) pane.style.touchAction = 'none';
 		const savedScale = typeof scale === 'boolean' ? scale : cloneReadonly(scale);
 		this._chart.applyOptions({ handleScroll: false, handleScale: false });
 		this._restoreChartControls = () => {
+			if (pane) pane.style.touchAction = touchAction ?? '';
 			this._chart.applyOptions({
 				handleScroll: savedScroll,
 				handleScale: savedScale,
@@ -542,7 +669,8 @@ export class DrawingManager {
 
 	private _hitTestAll(
 		x: number,
-		y: number
+		y: number,
+		hitSlop: number = 0
 	): { drawing: BaseDrawing; hit: HitPart; item: PrimitiveHoveredItem } | null {
 		if (!this._drawingsVisible) return null;
 
@@ -557,7 +685,7 @@ export class DrawingManager {
 		// Iterate from top-most (most recently created) to bottom
 		for (let i = this._drawings.length - 1; i >= 0; i--) {
 			const drawing = this._drawings[i];
-			const item = drawing.hitTest(x, y);
+			const item = drawing.hitTest(x, y, hitSlop);
 			if (!item) continue;
 			const hit = decodeExternalId(item.externalId);
 			if (!hit) continue;
@@ -594,7 +722,19 @@ export class DrawingManager {
 	}
 
 	private _onPointerDown = (event: PointerEvent): void => {
-		if (!event.isPrimary || event.button !== 0) return;
+		if (!event.isPrimary) {
+			// A second finger arrived (e.g., pinch-zoom): abort any unmoved drag or in-flight creation stroke.
+			if (this._drag && !this._drag.didMove) {
+				this._releasePointer(this._drag.pointerId);
+				this._endDrag(false);
+			}
+			if (this._creationPointerId !== null) {
+				this._releasePointer(this._creationPointerId);
+				this._cancelDraft();
+			}
+			return;
+		}
+		if (event.button !== 0) return;
 		const pt = this._panePoint(event.clientX, event.clientY);
 		if (!pt) return;
 
@@ -605,7 +745,11 @@ export class DrawingManager {
 				this._draftPoints.length > 0 && def.pointCount >= 2
 					? this._draftPoints[this._draftPoints.length - 1]
 					: null;
-			const snappedPt = this._resolveScreenWithShift(pt, event.shiftKey, originAnchor);
+			let snappedPt = this._resolveScreenWithShift(pt, event.shiftKey, originAnchor);
+			if (this._activeTool === 'gann-square-fixed' && originAnchor) {
+				const origin = anchorToScreen(this._chart, this._series, originAnchor);
+				if (origin) { const size = Math.max(Math.abs(pt.x - origin.x), Math.abs(pt.y - origin.y)); snappedPt = { x: origin.x + Math.sign(pt.x - origin.x) * size, y: origin.y + Math.sign(pt.y - origin.y) * size }; }
+			}
 			const anchor = screenToAnchor(
 				this._chart,
 				this._series,
@@ -615,35 +759,23 @@ export class DrawingManager {
 			);
 			if (!anchor) return;
 
+			if (this._draftPoints.length >= 2000) return;
+			const normalized = this._normalize(anchor);
 			this._creationPointerId = event.pointerId;
+			this._creationDownScreen = pt;
+			this._creationDragged = false;
+			this._creationLastAnchor = normalized;
+			this._capturePointer(event.pointerId);
 			this._suspendControls();
 
-			this._draftPoints.push(anchor);
-			if (this._draftPoints.length >= def.pointCount) {
-				const toolType = this._activeTool;
-				const finalPoints = this._draftPoints.slice(0, def.pointCount);
-				this._cancelDraft();
-
-				const created = this.addDrawing(toolType, finalPoints, {}, true);
-				this._setSelectedInternal(created.id);
-
-				if (!this._stayInDrawingMode) {
-					this._activeTool = null;
-					this._updatePaneCursor();
-				}
-				this._emitState();
-
-				if (toolType === 'text') {
-					this.requestTextEdit(created.id);
-				}
-			} else {
-				this._updateDraftPreview(anchor);
-			}
+			this._draftPoints.push(normalized);
+			this._updateDraftPreview(normalized);
 			return;
 		}
 
 		// Mode 2: Cursor selection & drag
-		const best = this._hitTestAll(pt.x, pt.y);
+		const hitSlop = event.pointerType === 'touch' ? 14 : 0;
+		const best = this._hitTestAll(pt.x, pt.y, hitSlop);
 		if (!best) {
 			if (this._selectedId !== null) {
 				this.selectDrawing(null);
@@ -666,6 +798,7 @@ export class DrawingManager {
 		}
 
 		this._suspendControls();
+		this._capturePointer(event.pointerId);
 		this._drag = {
 			pointerId: event.pointerId,
 			drawing,
@@ -673,6 +806,7 @@ export class DrawingManager {
 			anchorIndex: hit.anchorIndex ?? 0,
 			startLogical,
 			startPrice,
+			origOptions: { ...drawing.options() },
 			origPoints: drawing.points().map(p => ({ ...p })),
 			preDragSnapshot: this._serializeList(),
 			didMove: false,
@@ -707,7 +841,7 @@ export class DrawingManager {
 					this._magnetMode
 				);
 				if (nextAnchor) {
-					drawing.setPoint(anchorIndex, nextAnchor);
+					drawing.setPoint(anchorIndex, this._normalize(nextAnchor));
 					this._drag.didMove = true;
 				}
 			} else {
@@ -720,7 +854,11 @@ export class DrawingManager {
 						const shifted = origPoints.map(orig =>
 							shiftAnchor(this._chart, orig, deltaLogical, deltaPrice)
 						);
-						drawing.setPoints(shifted);
+						drawing.setPoints(shifted.map(point => this._normalize(point)));
+						if (drawing.type === 'anchored-text') {
+							const point = anchorToScreen(this._chart, this._series, drawing.points()[0]);
+							if (point) drawing.applyOptions({ anchorX: point.x / this._chart.timeScale().width(), anchorY: point.y / this._series.getPane().getHeight() });
+						}
 						this._drag.didMove = true;
 					}
 				}
@@ -730,9 +868,16 @@ export class DrawingManager {
 
 		// 2. Live creation preview
 		if (this._activeTool !== null && this._draftPoints.length > 0) {
-			const pt = this._panePoint(event.clientX, event.clientY);
+			const isActiveStroke = this._creationPointerId !== null && event.pointerId === this._creationPointerId;
+			const pt = isActiveStroke
+				? this._panePointClamped(event.clientX, event.clientY)
+				: this._panePoint(event.clientX, event.clientY);
 			if (!pt) return;
-			const originAnchor = this._draftPoints[this._draftPoints.length - 1];
+			const definition = getToolDefinition(this._activeTool);
+			const originAnchor =
+				isActiveStroke && definition.pointCount > 0 && this._draftPoints.length >= definition.pointCount
+					? (this._draftPoints.length >= 2 ? this._draftPoints[this._draftPoints.length - 2] : null)
+					: this._draftPoints[this._draftPoints.length - 1];
 			const snappedPt = this._resolveScreenWithShift(pt, event.shiftKey, originAnchor);
 			const anchor = screenToAnchor(
 				this._chart,
@@ -742,7 +887,22 @@ export class DrawingManager {
 				this._magnetMode
 			);
 			if (anchor) {
-				this._updateDraftPreview(anchor);
+				const normalized = this._normalize(anchor);
+				if (definition.creation === 'freehand') {
+					if (!isActiveStroke || this._draftPoints.length >= 2000) return;
+					const last = anchorToScreen(this._chart, this._series, this._draftPoints[this._draftPoints.length - 1]);
+					if (last && Math.hypot(pt.x - last.x, pt.y - last.y) < 3) return;
+					this._draftPoints.push(normalized);
+				} else if (isActiveStroke && definition.pointCount > 0 && this._draftPoints.length >= definition.pointCount) {
+					// Allow press-and-slide aiming of the final anchor (e.g., horizontal line price or trend line end).
+					this._draftPoints[this._draftPoints.length - 1] = normalized;
+				} else if (isActiveStroke && definition.pointCount === 2 && this._draftPoints.length === 1) {
+					if (this._creationDownScreen && Math.hypot(pt.x - this._creationDownScreen.x, pt.y - this._creationDownScreen.y) >= 16) {
+						this._creationDragged = true;
+					}
+					this._creationLastAnchor = normalized;
+				}
+				this._updateDraftPreview(normalized);
 			}
 			return;
 		}
@@ -765,12 +925,27 @@ export class DrawingManager {
 	}
 
 	private _onPointerUp(event: PointerEvent): void {
+		this._releasePointer(event.pointerId);
 		if (this._creationPointerId !== null && event.pointerId === this._creationPointerId) {
+			const draggedTwoPoint = this._creationDragged;
+			const lastAnchor = this._creationLastAnchor;
 			this._creationPointerId = null;
-			this._restoreControls();
+			this._creationDownScreen = null;
+			this._creationDragged = false;
+			this._creationLastAnchor = null;
+			if (event.type === 'pointercancel') {
+				this._cancelDraft();
+			} else if (this._activeTool) {
+				const def = getToolDefinition(this._activeTool);
+				if (def.pointCount === 2 && this._draftPoints.length === 1 && draggedTwoPoint && lastAnchor) {
+					this._draftPoints.push(lastAnchor);
+				}
+				if (def.creation !== 'path') this.finishDrawing();
+			}
+			if (!this._activeTool) this._restoreControls();
 		}
 		if (this._drag && event.pointerId === this._drag.pointerId) {
-			this._endDrag(true);
+			this._endDrag(event.type !== 'pointercancel');
 		}
 	}
 
@@ -780,6 +955,7 @@ export class DrawingManager {
 		this._drag = null;
 		this._restoreControls();
 
+		if (!commit) { session.drawing.setPoints(session.origPoints); session.drawing.applyOptions(session.origOptions); }
 		if (commit && session.didMove) {
 			this._history.push(session.preDragSnapshot);
 			this._emitState();
@@ -787,17 +963,22 @@ export class DrawingManager {
 	}
 
 	private _onDoubleClick = (event: MouseEvent): void => {
-		if (this._activeTool !== null) return;
+		if (this._activeTool !== null) {
+			if (getToolDefinition(this._activeTool).creation === 'path') this.finishDrawing();
+			return;
+		}
 		const pt = this._panePoint(event.clientX, event.clientY);
 		if (!pt) return;
 		const best = this._hitTestAll(pt.x, pt.y);
-		if (best && best.drawing.type === 'text' && !best.drawing.options().locked) {
+		if (best && getToolDefinition(best.drawing.type).capabilities.hasText && !best.drawing.options().locked) {
 			this.requestTextEdit(best.drawing.id);
 		}
 	};
 
 	private _onKeyDown(event: KeyboardEvent): void {
-		if (isEditableElement(event.target)) return;
+		if (isEditableElement(event.target) || (event.target instanceof HTMLElement && event.target.closest('dialog[open]'))) return;
+
+		if (event.key === 'Enter' && this._activeTool && getToolDefinition(this._activeTool).creation === 'path') { event.preventDefault(); this.finishDrawing(); return; }
 
 		if (event.key === 'Escape') {
 			if (this._draftPoints.length > 0) {
@@ -845,9 +1026,10 @@ export class DrawingManager {
 
 	private _updateDraftPreview(cursorAnchor: AnchorPoint): void {
 		if (!this._activeTool) return;
-		const previewPoints = [...this._draftPoints, cursorAnchor];
+		const definition = getToolDefinition(this._activeTool);
+		const previewPoints = definition.creation === 'freehand' || (definition.pointCount > 0 && this._draftPoints.length >= definition.pointCount) ? [...this._draftPoints] : [...this._draftPoints, this._normalize(cursorAnchor)];
 		if (!this._previewDrawing) {
-			this._previewDrawing = createDrawingInstance({
+			this._previewDrawing = this._createInstance({
 				id: '__preview__',
 				type: this._activeTool,
 				points: previewPoints,
@@ -862,6 +1044,10 @@ export class DrawingManager {
 	}
 
 	private _cancelDraft(): void {
+		this._creationPointerId = null;
+		this._creationDownScreen = null;
+		this._creationDragged = false;
+		this._creationLastAnchor = null;
 		this._draftPoints = [];
 		if (this._previewDrawing) {
 			this._series.detachPrimitive(this._previewDrawing);

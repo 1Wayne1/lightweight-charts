@@ -49,7 +49,7 @@ export class TrendLineDrawing extends BaseDrawing {
 		});
 	}
 
-	protected hitTestBody(point: ScreenPoint): BodyHitResult | null {
+	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		const p2 = this._screenPoints[1];
 		if (!p1 || !p2) return null;
@@ -66,7 +66,7 @@ export class TrendLineDrawing extends BaseDrawing {
 			dist = distancePointToSegment(point, p1, p2);
 		}
 
-		if (dist <= LINE_HIT_TOLERANCE + lineWidth / 2) {
+		if (dist <= LINE_HIT_TOLERANCE + hitSlop + lineWidth / 2) {
 			return { distance: dist, priority: 1, cursorStyle: 'grab' };
 		}
 		return null;

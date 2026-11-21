@@ -1,3 +1,5 @@
+import { EXTENDED_DEFINITIONS } from './catalog';
+import { ExtendedDrawing } from './extended-drawing';
 import { LineStyle } from 'lightweight-charts';
 import { BaseDrawing } from '../base-drawing';
 import {
@@ -39,6 +41,27 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 		},
 	},
 	{
+		type: 'horizontal-line',
+		label: 'Horizontal Line',
+		shortLabel: '水平线',
+		pointCount: 1,
+		capabilities: {
+			hasStroke: true,
+			hasFill: false,
+			hasLineWidth: true,
+			hasLineStyle: true,
+			hasExtend: false,
+			hasText: false,
+			hasMidline: false,
+		},
+		defaultOptions: {
+			color: '#F23645',
+			lineWidth: 2,
+			lineStyle: LineStyle.Solid,
+			showLabels: true,
+		},
+	},
+	{
 		type: 'ray',
 		label: 'Ray',
 		shortLabel: '射线',
@@ -58,27 +81,6 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 			lineStyle: LineStyle.Solid,
 			extendLeft: false,
 			extendRight: true,
-		},
-	},
-	{
-		type: 'horizontal-line',
-		label: 'Horizontal Line',
-		shortLabel: '水平线',
-		pointCount: 1,
-		capabilities: {
-			hasStroke: true,
-			hasFill: false,
-			hasLineWidth: true,
-			hasLineStyle: true,
-			hasExtend: false,
-			hasText: false,
-			hasMidline: false,
-		},
-		defaultOptions: {
-			color: '#F23645',
-			lineWidth: 2,
-			lineStyle: LineStyle.Solid,
-			showLabels: true,
 		},
 	},
 	{
@@ -214,6 +216,7 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
 			text: 'Note',
 		},
 	},
+	...EXTENDED_DEFINITIONS,
 ];
 
 const definitionMap = new Map<DrawingToolType, ToolDefinition>(
@@ -230,7 +233,8 @@ export function getToolDefinition(type: DrawingToolType): ToolDefinition {
 
 export function createDrawingInstance(data: SerializedDrawing): BaseDrawing {
 	const def = getToolDefinition(data.type);
-	const mergedOptions = { ...def.defaultOptions, ...data.options };
+	const centered = ['rectangle', 'circle', 'ellipse', 'parallel-channel', 'flat-channel', 'disjoint-channel'].includes(data.type);
+	const mergedOptions: Partial<import('../types').DrawingStyleOptions> = { ...(centered ? { textPosition: 'middle' } as const : {}), ...def.defaultOptions, ...data.options };
 	switch (data.type) {
 		case 'trend-line':
 			return new TrendLineDrawing(data.id, data.points, mergedOptions);
@@ -250,6 +254,8 @@ export function createDrawingInstance(data: SerializedDrawing): BaseDrawing {
 			return new PriceDateRangeDrawing(data.id, data.points, mergedOptions);
 		case 'text':
 			return new TextAnnotationDrawing(data.id, data.points, mergedOptions);
+		default:
+			return new ExtendedDrawing(data.type, data.id, data.points, mergedOptions);
 	}
 }
 

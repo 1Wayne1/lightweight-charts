@@ -56,11 +56,11 @@ export class HorizontalLineDrawing extends BaseDrawing {
 		this._timeAxisViews.forEach(v => v.update(null, '', false, this._options.color));
 	}
 
-	protected hitTestBody(point: ScreenPoint): BodyHitResult | null {
+	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		if (!p1) return null;
 		const dist = Math.abs(point.y - p1.y);
-		if (dist <= LINE_HIT_TOLERANCE + this._options.lineWidth / 2) {
+		if (dist <= LINE_HIT_TOLERANCE + hitSlop + this._options.lineWidth / 2) {
 			return { distance: dist, priority: 1, cursorStyle: 'ns-resize' };
 		}
 		return null;

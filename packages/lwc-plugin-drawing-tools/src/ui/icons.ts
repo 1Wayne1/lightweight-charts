@@ -3,7 +3,7 @@ import { DrawingToolType } from '../types';
 const svg = (inner: string, size: number = 20): string =>
 	`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
 
-export const TOOL_ICONS: Record<DrawingToolType, string> = {
+export const TOOL_ICONS: Partial<Record<DrawingToolType, string>> = {
 	'trend-line': svg(
 		`<line x1="5" y1="19" x2="19" y2="5"/><circle cx="5" cy="19" r="2" fill="currentColor"/><circle cx="19" cy="5" r="2" fill="currentColor"/>`
 	),

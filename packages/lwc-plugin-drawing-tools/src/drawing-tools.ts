@@ -84,3 +84,10 @@ export type { FloatingPropertiesBarOptions } from './ui/properties-bar';
 
 export { createDrawingTools } from './ui/studio';
 export type { CreateDrawingToolsOptions, DrawingToolsStudio } from './ui/studio';
+
+export { EXTENDED_TOOLS } from './tools/catalog';
+export type { ExtendedToolType } from './tools/catalog';
+export type { DrawingBar } from './tools/extended-geometry';
+
+export { attachedTextKind } from './attached-text';
+export type { AttachedTextTarget } from './attached-text';

@@ -81,8 +81,8 @@ export class FibRetracementDrawing extends BaseDrawing {
 			ctx.stroke();
 
 			// 3. Horizontal Fibonacci level lines & labels
-			ctx.font = '11px -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, sans-serif';
-			ctx.textBaseline = 'bottom';
+			ctx.font = `${opts.fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+			ctx.textBaseline = opts.textPosition === 'bottom' ? 'bottom' : 'top';
 
 			for (const lvl of computedLevels) {
 				const y = Math.round(lvl.y) + 0.5;
@@ -97,7 +97,9 @@ export class FibRetracementDrawing extends BaseDrawing {
 				if (opts.showLabels) {
 					const label = `${lvl.value} (${formatPrice(series, lvl.price)})`;
 					ctx.fillStyle = lvl.color;
-					ctx.fillText(label, leftX + 6, y - 3);
+					const outside = leftX > ctx.measureText(label).width + 12;
+					ctx.textAlign = outside ? 'right' : 'left';
+					ctx.fillText(label, outside ? leftX - 6 : leftX + 6, y + (opts.textPosition === 'bottom' ? -3 : 3));
 				}
 			}
 
@@ -105,7 +107,7 @@ export class FibRetracementDrawing extends BaseDrawing {
 		});
 	}
 
-	protected hitTestBody(point: ScreenPoint): BodyHitResult | null {
+	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		const p2 = this._screenPoints[1];
 		const a1 = this._points[0];
@@ -117,7 +119,7 @@ export class FibRetracementDrawing extends BaseDrawing {
 		const paneW = chart.timeScale().width() || 2000;
 		const leftX = this._options.extendLeft ? 0 : Math.min(p1.x, p2.x);
 		const rightX = this._options.extendRight ? paneW : Math.max(p1.x, p2.x);
-		const tol = LINE_HIT_TOLERANCE + this._options.lineWidth / 2;
+		const tol = LINE_HIT_TOLERANCE + hitSlop + this._options.lineWidth / 2;
 
 		let minLineDist = distancePointToSegment(point, p1, p2);
 		const priceDiff = a1.price - a2.price;

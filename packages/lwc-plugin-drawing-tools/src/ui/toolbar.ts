@@ -47,7 +47,7 @@ export class DrawingToolbar {
 		// 9 Core Drawing Tools
 		for (const def of TOOL_DEFINITIONS) {
 			const btn = this._createButton(
-				TOOL_ICONS[def.type],
+				(TOOL_ICONS[def.type] ?? TOOL_ICONS['trend-line']!),
 				`${def.shortLabel} (${def.label})`,
 				() => {
 					const next = this._manager.activeTool() === def.type ? null : def.type;
