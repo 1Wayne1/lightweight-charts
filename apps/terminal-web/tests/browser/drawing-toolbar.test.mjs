@@ -266,6 +266,8 @@ test('grouped toolbar, drawing controls, persistence and responsive menus', { ti
 		await clickLabel('锁定画线'); assert.equal(await page.$eval('[aria-label="删除选中画线"]', el => el.disabled), true); await clickLabel('解锁画线');
 		await screenshot('desktop-rectangle-toolbar');
 
+		// Text hit targets are updated during Canvas painting; screenshots are optional.
+		await page.evaluate(() => new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))));
 		const rectBounds = await page.$eval('.chart-stage', el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y }; });
 		await page.mouse.click(rectBounds.x + 380, rectBounds.y + 345);
 		await page.waitForSelector('.drawing-inline-text textarea');
