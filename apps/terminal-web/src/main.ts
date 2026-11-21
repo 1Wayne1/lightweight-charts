@@ -1,4 +1,4 @@
-import { TIMEFRAMES, TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseWorkspace, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type Workspace } from '@terminal/domain';
+import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseWorkspace, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type Workspace } from '@terminal/domain';
 import { CrosshairMode } from 'lightweight-charts';
 import { createTerminalChart, type ChartLayout, type IndicatorSettings, type TerminalChart } from './chart';
 import { INDICATOR_CATALOG, getCatalogIndicator } from './data/indicator-catalog';
@@ -6,8 +6,10 @@ import {
 	INDICATOR_STORAGE_KEY, activePaneOrder, defaultIndicatorSettings, isIndicatorEnabled, isIndicatorVisible, setIndicatorVisible,
 	moveVisiblePane, parseIndicatorSettings, setIndicatorEnabled, type PaneId,
 } from './data/indicators';
+import { TIMEFRAME_LONG_LABELS } from './data/timeframes';
 import { renderIndicatorPanel } from './indicator-ui';
 import { indicatorLegendRow, updateIndicatorLegendValues } from './indicator-legend';
+import { createTimeframeUI } from './timeframe-ui';
 import { catalogue, coinBadge, formatPrice, instruments, marketFor, marketLabel, priceTick, registerInstruments, symbolLabel } from './markets';
 import { BinanceProvider, defaultEndpoints } from './data/binance';
 import { startCandleFeed } from './data/candle-feed';
@@ -23,7 +25,6 @@ import './mobile.css';
 import './indicator-legend.css';
 
 const STORAGE_KEY = 'crypto-terminal.workspace.v1';
-const periodLabels = { '1m': '1分', '5m': '5分', '15m': '15分', '1h': '1小时', '4h': '4小时', '1d': '日线' };
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing application root');
 app.replaceChildren();
@@ -83,6 +84,9 @@ symbolButton.onclick = () => openPicker();
 symbolButton.title = '搜索交易对';
 const periods = element('div', 'periods');
 periods.setAttribute('aria-label', '图表周期');
+const timeframeUI = createTimeframeUI(app, periods, timeframe => {
+	if (state.activeTabId) commit(setTimeframe(state, state.activeTabId, timeframe));
+});
 const separator = (): HTMLSpanElement => element('span', 'separator');
 const chartType = iconButton('candles', '蜡烛图');
 chartType.disabled = true;
@@ -300,6 +304,7 @@ function positionIndicatorDropdown(): void {
 }
 
 function openIndicatorDropdown(focusId?: string): void {
+	timeframeUI.close();
 	if (mobile.isMobile()) {
 		mobile.openIndicators(focusId);
 		return;
@@ -668,7 +673,6 @@ function render(): void {
 	lastChartLayout = { panes: {}, rightScaleWidth: mobile.isMobile() ? 64 : 78, maximizedPane: null };
 	candleCount = 0;
 	tabs.replaceChildren();
-	periods.replaceChildren();
 	stage.replaceChildren();
 	ohlc.replaceChildren();
 	status.textContent = storageNotice;
@@ -692,6 +696,7 @@ function render(): void {
 	updateIndicatorLabels();
 	marketStatus.hidden = !active;
 	const preference = active ? state.preferences[active.instrumentKey] : undefined;
+	timeframeUI.update(preference?.timeframe);
 	mobile.update(preference?.instrument, preference?.timeframe ?? '1h', quotes);
 	renderDetail(preference?.instrument);
 	symbolButton.replaceChildren(icon('search'), element('span', '', preference ? symbolLabel(preference.instrument) : '搜索交易对'));
@@ -704,14 +709,7 @@ function render(): void {
 		emptyState.append(open);
 		return;
 	}
-	title.replaceChildren(coinBadge(preference.instrument), element('span', '', `${marketFor(preference.instrument).name} / USDT · ${marketLabel(preference.instrument)}`), element('span', 'chart-meta', `· ${periodLabels[preference.timeframe]} · BINANCE`));
-	for (const timeframe of TIMEFRAMES) {
-		const button = element('button', '', periodLabels[timeframe]);
-		button.setAttribute('aria-label', `周期 ${timeframe}`);
-		button.setAttribute('aria-pressed', String(timeframe === preference.timeframe));
-		button.onclick = () => commit(setTimeframe(state, active.id, timeframe));
-		periods.append(button);
-	}
+	title.replaceChildren(coinBadge(preference.instrument), element('span', '', `${marketFor(preference.instrument).name} / USDT · ${marketLabel(preference.instrument)}`), element('span', 'chart-meta', `· ${TIMEFRAME_LONG_LABELS[preference.timeframe]} · BINANCE`));
 	emptyState.hidden = false;
 	emptyState.replaceChildren(element('p', '', '正在加载行情…'));
 	const currentChart = createTerminalChart(stage, settings, renderOhlc, applyPaneLayout);
@@ -872,6 +870,7 @@ window.addEventListener('pagehide', onPageHide);
 window.addEventListener('pageshow', onPageShow);
 const clockTimer = window.setInterval(updateClock, 30000);
 if (import.meta.hot) import.meta.hot.dispose(() => {
+	timeframeUI.destroy();
 	mobile.destroy();
 	onPageHide();
 	drawingUI.destroy();

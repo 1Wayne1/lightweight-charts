@@ -21,6 +21,8 @@ export function mergeCandles(previous: Candle[], incoming: Candle[]): Candle[] {
 export function startCandleFeed(source: CandleSource, instrument: Instrument, timeframe: Timeframe, observer: FeedObserver) {
 	const controller = new AbortController();
 	const step = TIMEFRAME_SECONDS[timeframe];
+	const minStep = timeframe === '1M' ? 28 * 86400 : step;
+	const maxStep = timeframe === '1M' ? 31 * 86400 : step;
 	let data: Candle[] = [];
 	let pending: CandleEvent[] = [];
 	let syncing = false;
@@ -53,7 +55,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 				if (!alive()) return;
 				batch = mergeCandles(batch, page);
 				if (initial || page.length < 500) break;
-				const next = (page.at(-1)?.time ?? 0) + step;
+				const next = (page.at(-1)?.time ?? 0) + minStep;
 				if (after !== undefined && next <= after) throw new Error('历史行情未向前推进');
 				after = next;
 				if (++pages >= 100) throw new Error('离线时间过长，请重新打开交易对');
@@ -85,7 +87,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 		onData: event => {
 			if (!alive() || event.eventTime < eventTime) return;
 			streamActive = true;
-			if (syncing || needsSync || !data.length || event.candle.time > data[data.length - 1].time + step) {
+			if (syncing || needsSync || !data.length || event.candle.time > data[data.length - 1].time + maxStep) {
 				pending.push(event);
 				if (pending.length > 1000) pending = pending.slice(-1000);
 				void snapshot();

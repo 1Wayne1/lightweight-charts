@@ -1,5 +1,6 @@
 import { instrumentKey, type ConnectionState, type Instrument, type MarketQuote, type Timeframe } from '@terminal/domain';
 import type { IndicatorSettings } from './chart';
+import { TIMEFRAME_GROUPS, TIMEFRAME_LONG_LABELS } from './data/timeframes';
 import { HoldSwitcher } from './hold-switcher';
 import { renderIndicatorPanel } from './indicator-ui';
 import { coinBadge, formatPrice, instruments, marketFor, marketLabel, symbolLabel } from './markets';
@@ -7,7 +8,7 @@ import { element, icon, iconButton } from './ui';
 
 // Include phone landscape independently of portrait width. Keep CSS on this same query.
 export const MOBILE_QUERY = '(max-width: 760px), (max-width: 1100px) and (max-height: 600px)';
-export const timeframeLabels: Record<Timeframe, string> = { '1m': '1分钟', '5m': '5分钟', '15m': '15分钟', '1h': '1小时', '4h': '4小时', '1d': '1天' };
+export const timeframeLabels: Record<Timeframe, string> = TIMEFRAME_LONG_LABELS;
 
 interface MobileOptions {
 	app: HTMLElement;
@@ -286,11 +287,11 @@ export function createMobileUI(options: MobileOptions) {
 			dateRanges.append(button);
 		}
 		sheetBody.append(dateRanges, element('h3', 'sheet-section-title', '周期'));
-		for (const [label, values] of [['分钟', ['1m', '5m', '15m']], ['小时', ['1h', '4h']], ['天', ['1d']]] as [string, Timeframe[]][]) {
+		for (const group of TIMEFRAME_GROUPS) {
 			const section = element('section', 'period-section');
-			section.append(element('h4', '', label));
+			section.append(element('h4', '', group.label));
 			const chips = element('div', 'sheet-chips');
-			for (const value of values) {
+			for (const value of group.timeframes) {
 				const button = element('button', 'sheet-chip', timeframeLabels[value]);
 				button.setAttribute('aria-pressed', String(value === timeframe));
 				button.setAttribute('aria-label', `手机周期 ${value}`);

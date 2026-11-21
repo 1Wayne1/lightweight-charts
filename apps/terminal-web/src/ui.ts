@@ -44,6 +44,7 @@ const paths = {
 	maximize: '<path d="M8 4H5a1 1 0 0 0-1 1v3m12-4h3a1 1 0 0 1 1 1v3M4 16v3a1 1 0 0 0 1 1h3m12-4v3a1 1 0 0 1-1 1h-3"/>',
 	minimize: '<path d="M4 9h4a1 1 0 0 0 1-1V4m11 5h-4a1 1 0 0 1-1-1V4M4 15h4a1 1 0 0 1 1 1v4m11-5h-4a1 1 0 0 0-1 1v4"/>',
 	settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.9 4.9l2.1 2.1m10 10 2.1 2.1M2 12h3m14 0h3M4.9 19.1 7 17m10-10 2.1-2.1"/>',
+	star: '<path d="m12 3.5 2.7 5.5 6 .9-4.3 4.2 1 6-5.4-2.8-5.4 2.8 1-6-4.3-4.2 6-.9L12 3.5Z"/>',
 };
 export type IconName = keyof typeof paths;
 
