@@ -55,7 +55,7 @@ function buildPlotSeries(
 		if (plot.kind === 'histogram') {
 			const s = pane.addSeries(HistogramSeries, {
 				priceLineVisible: false,
-				lastValueVisible: plot.lastValueVisible ?? false,
+				lastValueVisible: plot.lastValueVisible ?? isSubPane,
 				autoscaleInfoProvider,
 			});
 			map.set(plot.key, s);

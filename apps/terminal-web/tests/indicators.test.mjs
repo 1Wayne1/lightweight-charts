@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-	INDICATOR_CATALOG, createMaRunner, defaultParamsFor, histogramBarColor,
+	INDICATOR_CATALOG, createMaRunner, defaultParamsFor, getCatalogIndicator, histogramBarColor,
 } from '../src/data/indicator-catalog.ts';
 import {
 	MAX_MA_LINES, activePaneOrder, calculateEmaSeries, calculateRsiSeries, calculateSmaSeries,
@@ -129,6 +129,8 @@ test('MACD histogram uses TradingView 4-state colors for above/below zero and gr
 	assert.equal(histogramBarColor(8, 10), '#B2DFDB');
 	assert.equal(histogramBarColor(-10, -5), '#FF5252');
 	assert.equal(histogramBarColor(-6, -10), '#FFCDD2');
+	const macd = getCatalogIndicator('macd').createRunner({ fast: 12, slow: 26, signal: 9 }, '#4285ff');
+	assert.equal(macd.plots.find(plot => plot.key === 'histogram')?.lastValueVisible, true);
 });
 
 test('legend visibility preserves added indicators, pane order and legacy settings', () => {

@@ -185,7 +185,13 @@ export function renderIndicatorPanel(
 			color.type = 'color';
 			color.value = line.color;
 			color.setAttribute('aria-label', `${kind.toUpperCase()} ${index + 1} 颜色`);
-			color.onchange = () => { line.color = color.value; onChange(); };
+			const applyLineColor = (): void => {
+				if (line.color === color.value) return;
+				line.color = color.value;
+				onChange();
+			};
+			color.oninput = applyLineColor;
+			color.onchange = applyLineColor;
 
 			const periodWrap = element('label', 'ind-period-field');
 			periodWrap.append(element('span', '', kind.toUpperCase()));
@@ -248,10 +254,13 @@ export function renderIndicatorPanel(
 			color.type = 'color';
 			color.value = indicatorColor(settings, item.id);
 			color.setAttribute('aria-label', `${item.shortName} 颜色`);
-			color.onchange = () => {
+			const applyIndicatorColor = (): void => {
+				if (settings.colors[item.id] === color.value) return;
 				settings.colors[item.id] = color.value;
 				onChange();
 			};
+			color.oninput = applyIndicatorColor;
+			color.onchange = applyIndicatorColor;
 			colorRow.append(color, element('span', 'ind-period-field', '主线条颜色'));
 			form.append(colorRow);
 		}

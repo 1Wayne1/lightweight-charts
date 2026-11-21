@@ -163,7 +163,7 @@ export const INDICATOR_CATALOG: readonly CatalogIndicator[] = [
 			const ind = new MACD(new EMA(fast), new EMA(slow), new EMA(sig));
 			return {
 				plots: [
-					{ key: 'histogram', label: '柱', kind: 'histogram', color: '#26A69A', lastValueVisible: false },
+					{ key: 'histogram', label: '柱', kind: 'histogram', color: '#26A69A', lastValueVisible: true },
 					{ key: 'macd', label: `DIF(${fast},${slow})`, kind: 'line', color, lineWidth: 1, lastValueVisible: true },
 					{ key: 'signal', label: `DEA(${sig})`, kind: 'line', color: '#ff9e2c', lineWidth: 1, lastValueVisible: true },
 				],
