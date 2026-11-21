@@ -1,0 +1,62 @@
+.drawing-rail .drawing-toolbar { width: 100%; display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 2px; color: #b2b5be; }
+.drawing-tool-slot { position: relative; display: flex; width: 100%; align-items: center; justify-content: center; border-radius: 4px; flex-shrink: 0; }
+.drawing-rail-button { position: relative; width: 34px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border-radius: 4px; flex-shrink: 0; color: inherit; }
+.drawing-rail-button .drawing-icon { width: 25px; height: 25px; }
+.drawing-rail-button:hover, .drawing-tool-slot.menu-open { background: #2a2e39; color: #f0f3fa; }
+.drawing-rail-button[aria-pressed=true] { color: #5388ff; background: transparent; }
+.drawing-rail-button[aria-pressed=true]:hover { background: #2962ff1f; }
+.drawing-rail-button:disabled { opacity: .35; }
+.drawing-tool-slot > .drawing-group-expand { position: absolute; right: 0; top: 2px; width: 10px; height: 32px; border-radius: 3px; color: #787b86; opacity: 0; }
+.drawing-tool-slot:hover > .drawing-group-expand, .drawing-tool-slot:has(> :focus-visible) > .drawing-group-expand { opacity: 1; }
+.drawing-group-expand .drawing-icon { width: 11px; height: 15px; }
+.drawing-group-expand[aria-expanded=true] { color: #f0f3fa; background: #363a45; }
+.drawing-rail-divider { height: 1px; width: 28px; margin: 5px 0; flex-shrink: 0; background: #2a2e39; }
+.drawing-mode-badge { position: absolute; bottom: 0; right: 0; padding: 0 2px; border-radius: 2px; background: #2962ff; color: #fff; font-size: 8px; line-height: 12px; }
+.drawing-flyout { position: fixed; z-index: 60; width: 292px; max-width: calc(100vw - 64px); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain; padding: 6px 0; border: 1px solid #363a45; border-radius: 6px; background: #1e222d; color: #d1d4dc; box-shadow: 0 6px 24px #0006, 0 2px 6px #0003; scrollbar-width: thin; scrollbar-color: #434651 transparent; }
+.drawing-menu-heading { color: #9598a1; font-size: 11px; line-height: 18px; padding: 10px 16px 6px; }
+.drawing-menu-heading:not(:first-child) { margin-top: 6px; border-top: 1px solid #363a45; padding-top: 12px; }
+.drawing-menu-item { display: flex; width: 100%; align-items: center; min-height: 38px; gap: 14px; padding: 7px 16px; text-align: left; color: #d1d4dc; font-size: 13px; line-height: 20px; }
+.drawing-menu-item .drawing-icon { width: 23px; height: 23px; color: #b2b5be; }
+.drawing-menu-item:hover, .drawing-menu-item:focus-visible { background: #2a2e39; }
+.drawing-menu-item[aria-checked=true] { background: #2962ff1f; color: #79a4ff; }
+.drawing-menu-item[aria-checked=true] .drawing-icon { color: #79a4ff; }
+.drawing-menu-item:disabled { opacity: .4; }
+.drawing-menu-label { flex: 1; }
+.drawing-menu-shortcut { color: #787b86; font-size: 11px; }
+.drawing-menu-check { font-size: 13px; color: #5388ff; }
+.drawing-catalog-title { margin: 24px 0 0; padding-top: 18px; border-top: 1px solid #363a46; font-size: 14px; font-weight: 600; }
+.drawing-empty { padding: 32px 10px; text-align: center; color: #9198ae; }
+.drawing-dialog { width: min(680px, calc(100vw - 32px)); max-height: min(80dvh, 800px); padding: 0; color: #d1d4dc; background: #171a22; border: 1px solid #363a46; border-radius: 12px; }
+.drawing-dialog::backdrop { background: #0008; }
+.drawing-dialog-body { padding: 16px; overflow-y: auto; max-height: calc(80dvh - 70px); }
+.drawing-search { width: 100%; padding: 12px; border: 1px solid #363a46; border-radius: 6px; background: #10131a; color: inherit; }
+.drawing-group h3 { margin: 20px 0 8px; font-size: 12px; color: #9198ae; }
+.drawing-tool-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.drawing-button { min-height: 34px; border: 1px solid transparent; border-radius: 5px; padding: 6px 10px; color: inherit; background: #232735; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.drawing-button:hover, .drawing-button[aria-pressed=true] { background: #303c68; color: #b6c7ff; }
+.drawing-button:disabled { opacity: .4; cursor: default; }
+.drawing-tool-grid .drawing-button { display: flex; align-items: center; gap: 10px; white-space: normal; text-align: left; }
+.drawing-hint { position: absolute; z-index: 4; bottom: 38px; left: 10px; max-width: calc(100% - 100px); border-radius: 5px; padding: 8px 12px; background: #273862ed; color: #dce6ff; font-size: 12px; pointer-events: none; }
+.drawing-save-status { position: absolute; z-index: 4; top: calc(var(--main-pane-top, 0px) + 38px); right: calc(var(--price-scale-width, 84px) + 12px); max-width: calc(100% - 110px); color: #868fa6; font-size: 10px; pointer-events: none; text-align: right; }
+.drawing-save-status.error { color: #ffba7a; background: #3e2825; padding: 5px 8px; border-radius: 5px; font-size: 12px; pointer-events: auto; }
+.drawing-object { display: grid; grid-template-columns: minmax(100px, 1fr) repeat(3, auto); gap: 6px; margin-bottom: 8px; }
+@media (max-width: 760px), (max-width: 1100px) and (max-height: 600px) {
+ .drawing-flyout { display: none; }
+ .drawing-catalog-title { border-color: #e6e8ee; }
+ .drawing-dialog { margin: auto auto 0; width: 100%; max-width: 100%; max-height: 80dvh; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom); color: #242a38; background: #fff; border-color: #ddd; touch-action: manipulation; }
+ .drawing-dialog .dialog-heading { border-color: #e6e8ee; }
+ .drawing-dialog .drawing-button { color: #252b3b; background: #f0f2f7; min-height: 44px; }
+ .drawing-dialog .drawing-button[aria-pressed=true] { background: #2962ff; color: #fff; }
+ .drawing-dialog .drawing-search { color: #202637; background: #f2f4f8; border-color: #d8dce5; }
+ .drawing-tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+ .drawing-hint { left: 5px; bottom: 42px; max-width: calc(100% - 76px); font-size: 11px; }
+ .drawing-save-status { top: calc(var(--main-pane-top, 0px) + 34px); right: calc(var(--price-scale-width, 72px) + 10px); font-size: 9px; }
+}
+@media (max-width: 1100px) and (max-height: 600px) {
+ .drawing-dialog { width: min(680px, 95vw); max-height: 92dvh; }
+ .drawing-dialog-body { max-height: calc(92dvh - 65px); }
+ .drawing-hint { bottom: 32px; }
+ .drawing-tool-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+.drawing-hint[hidden], .drawing-save-status[hidden] { display: none; }

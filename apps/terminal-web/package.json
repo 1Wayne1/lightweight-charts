@@ -1,0 +1,24 @@
+{
+  "name": "@terminal/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.mjs",
+    "test:toolbar": "node --test tests/browser/drawing-toolbar.test.mjs"
+  },
+  "dependencies": {
+    "@terminal/domain": "workspace:*",
+    "@tradingview/lwc-plugin-drawing-tools": "workspace:*",
+    "lightweight-charts": "workspace:*",
+    "trading-signals": "~8.4.0"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "8.3.7"
+  }
+}

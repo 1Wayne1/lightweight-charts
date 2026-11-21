@@ -116,6 +116,12 @@
     "yargs": "17.7.2"
   },
   "scripts": {
+    "dev:terminal": "pnpm --filter @terminal/web dev",
+    "dev:sync": "pnpm --filter @terminal/sync-api dev",
+    "build:terminal": "pnpm build:prod && pnpm build:drawings && pnpm --filter @terminal/web build",
+    "typecheck:terminal": "pnpm --filter @tradingview/lwc-plugin-drawing-tools --filter @terminal/domain --filter @terminal/web typecheck",
+    "test:terminal": "pnpm --filter @tradingview/lwc-plugin-drawing-tools test && pnpm --filter @terminal/domain test && pnpm --filter @terminal/web test && pnpm --filter @terminal/sync-api test",
+    "lint:terminal": "eslint --ext .ts,.mjs --format=unix apps/terminal-web packages/terminal-domain services/sync-api && markdownlint AGENTS.md docs/terminal/*.md apps/terminal-native/README.md deploy/terminal/README.md",
     "postinstall": "node scripts/githooks/install.js",
     "install-hooks": "node scripts/githooks/install.js",
     "clean": "rimraf lib/ dist/",
@@ -159,7 +165,8 @@
     "e2e:coverage": "esno ./tests/e2e/coverage/runner.ts ./dist/lightweight-charts.standalone.development.js",
     "e2e:graphics:plugins": "esno ./tests/e2e/graphics/plugins-runner.ts ./dist/lightweight-charts.standalone.development.mjs ./dist/lightweight-charts.standalone.development.mjs --golden-plugins-dir ./packages",
     "e2e:interactions": "esno ./tests/e2e/interactions/runner.ts ./dist/lightweight-charts.standalone.development.js",
-    "e2e:memleaks": "esno ./tests/e2e/memleaks/runner.ts ./dist/lightweight-charts.standalone.development.js"
+    "e2e:memleaks": "esno ./tests/e2e/memleaks/runner.ts ./dist/lightweight-charts.standalone.development.js",
+    "build:drawings": "pnpm --filter @tradingview/lwc-toolkit build && pnpm --filter @tradingview/lwc-plugin-drawing-tools build"
   },
   "packageManager": "pnpm@10.34.5+sha512.a4ee05f2f73658255bd6a89859c065a45c28a57daefae2c893a168ee2b73168c37b91e83e57ea67654ad03f03031746430e8bce38e362e042605fb8abc80192e"
 }
