@@ -103,6 +103,11 @@ export class BinanceProvider implements MarketDataProvider {
 				throw new MarketDataError(response.status === 451 || response.status === 403 ? '当前网络或地区无法访问 Binance' : `Binance 行情请求失败 (${response.status})`);
 			}
 			return await response.json() as unknown;
+		} catch (error) {
+			if (signal?.aborted || error instanceof MarketDataError) throw error;
+			if (controller.signal.aborted && controller.signal.reason instanceof Error) throw controller.signal.reason;
+			if (error instanceof TypeError) throw new MarketDataError('无法连接 Binance 行情接口，请检查网络或代理');
+			throw error;
 		} finally {
 			clearTimeout(timeout);
 			signal?.removeEventListener('abort', abort);

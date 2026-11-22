@@ -207,3 +207,23 @@ test('incoming websocket data cannot bypass REST retry backoff', async t => {
 		assert.equal(calls, 2);
 	} finally { f.feed.stop(); }
 });
+
+test('manual retry bypasses local backoff and network TypeError surfaces a clear message', async () => {
+	const provider = new BinanceProvider(defaultEndpoints, async () => { throw new TypeError('Load failed'); });
+	await assert.rejects(provider.getCandles(spot, '1m'), /无法连接 Binance 行情接口/);
+
+	let calls = 0;
+	const f = sourceFixture(async () => {
+		calls++;
+		if (calls === 1) throw new MarketDataError('无法连接 Binance 行情接口', 30000);
+		return [bar()];
+	});
+	try {
+		await drain();
+		assert.equal(calls, 1);
+		f.feed.retry();
+		await drain();
+		assert.equal(calls, 2);
+		assert.equal(f.snapshots.length, 1);
+	} finally { f.feed.stop(); }
+});

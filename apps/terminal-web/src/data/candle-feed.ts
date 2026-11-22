@@ -38,11 +38,12 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 	const alive = (): boolean => !controller.signal.aborted;
 	const status = (state: ConnectionState, message: string): void => { if (alive()) observer.onState(state, message); };
 
-	async function snapshot(): Promise<void> {
-		if (!alive() || syncing || Date.now() < retryAt) return;
+	async function snapshot(force = false): Promise<void> {
+		if (!alive() || syncing || (!force && Date.now() < retryAt)) return;
 		syncing = true;
 		needsSync = true;
 		clearTimeout(retry);
+		retry = undefined;
 		status('syncing', data.length ? '正在补齐行情' : '正在加载 Binance 行情');
 		try {
 			const initial = data.length === 0;
@@ -122,7 +123,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 				status('error', '历史加载失败，稍后浏览更早时间重试');
 			} finally { loadingOlder = false; }
 		},
-		retry: () => { void snapshot(); },
+		retry: () => { retryAt = 0; failures = 0; void snapshot(true); },
 		stop: () => { controller.abort(); stop(); clearTimeout(retry); pending = []; },
 	};
 }
