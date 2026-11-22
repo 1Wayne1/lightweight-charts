@@ -1,12 +1,13 @@
-import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseWorkspace, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type Workspace } from '@terminal/domain';
+import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseWorkspace, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type Timeframe, type Workspace } from '@terminal/domain';
 import { CrosshairMode } from 'lightweight-charts';
 import { createTerminalChart, type ChartLayout, type IndicatorSettings, type TerminalChart } from './chart';
+import { attachChartPinch, installViewportZoomGuard } from './chart-pinch';
 import { INDICATOR_CATALOG, getCatalogIndicator } from './data/indicator-catalog';
 import {
 	INDICATOR_STORAGE_KEY, activePaneOrder, defaultIndicatorSettings, isIndicatorEnabled, isIndicatorVisible, setIndicatorVisible,
 	moveVisiblePane, parseIndicatorSettings, setIndicatorEnabled, type PaneId,
 } from './data/indicators';
-import { TIMEFRAME_LONG_LABELS } from './data/timeframes';
+import { MOBILE_TIMEFRAME_STORAGE_KEY, TIMEFRAME_LONG_LABELS, parseMobileTimeframe, resolveActiveTimeframe, serializeMobileTimeframe } from './data/timeframes';
 import { renderIndicatorPanel } from './indicator-ui';
 import { indicatorLegendRow, updateIndicatorLegendValues } from './indicator-legend';
 import { createTimeframeUI } from './timeframe-ui';
@@ -64,6 +65,23 @@ try {
 	settings = rawIndicators ? parseIndicatorSettings(JSON.parse(rawIndicators)) : defaultIndicatorSettings();
 } catch {
 	settings = defaultIndicatorSettings();
+}
+let mobileTimeframe: Timeframe | undefined;
+let renderedTimeframe: Timeframe | undefined;
+try {
+	const rawMobileTf = localStorage.getItem(MOBILE_TIMEFRAME_STORAGE_KEY);
+	if (rawMobileTf) mobileTimeframe = parseMobileTimeframe(JSON.parse(rawMobileTf));
+} catch {
+	mobileTimeframe = undefined;
+}
+function saveMobileTimeframe(timeframe: Timeframe): void {
+	mobileTimeframe = timeframe;
+	try { localStorage.setItem(MOBILE_TIMEFRAME_STORAGE_KEY, serializeMobileTimeframe(timeframe)); } catch { /* ignore */ }
+}
+function preserveMobileTimeframe(): void {
+	if (mobileTimeframe !== undefined) return;
+	const currentTab = state.tabs.find(tab => tab.id === state.activeTabId);
+	if (currentTab) saveMobileTimeframe(state.preferences[currentTab.instrumentKey].timeframe);
 }
 
 // Compact tab strip and shared chart controls.
@@ -128,6 +146,8 @@ const ohlc = element('div', 'ohlc');
 const stageWrap = element('div', 'stage-wrap');
 const stage = element('div', 'chart-stage');
 stage.setAttribute('aria-label', 'K 线图');
+const stopViewportZoomGuard = installViewportZoomGuard();
+const stopChartPinch = attachChartPinch(stageWrap, () => chart);
 const indicatorLegend = element('div', 'indicator-legend');
 priceOverlay.append(chartHeading, ohlc, indicatorLegend);
 const subPaneLabels = new Map<string, HTMLDivElement>();
@@ -382,10 +402,17 @@ function applyPaneLayout(layout: ChartLayout): void {
 	syncHoveredPaneVisual();
 }
 
-const drawingUI = createDrawingUI(app, drawingRail, stageWrap, active => mobile?.setDrawingActive(active), mode => {
-	crosshairVisible = mode === 'cross';
-	chart?.chart.applyOptions({ crosshair: { mode: crosshairVisible ? drawingSession?.manager.magnetMode() === 'strong' ? CrosshairMode.MagnetOHLC : CrosshairMode.Normal : CrosshairMode.Hidden } });
-});
+const drawingUI = createDrawingUI(
+	app,
+	drawingRail,
+	stageWrap,
+	active => mobile?.setDrawingActive(active),
+	mode => {
+		crosshairVisible = mode === 'cross';
+		chart?.chart.applyOptions({ crosshair: { mode: crosshairVisible ? drawingSession?.manager.magnetMode() === 'strong' ? CrosshairMode.MagnetOHLC : CrosshairMode.Normal : CrosshairMode.Hidden } });
+	},
+	canUndo => mobile?.setUndoEnabled(canUndo),
+);
 const railBottom = element('div', 'rail-bottom');
 railBottom.append(iconButton('help', '关于看盘工作台', () => about.showModal()));
 drawingRail.append(railBottom);
@@ -400,22 +427,33 @@ const mobile = createMobileUI({
 		redo: () => drawingSession?.manager.redo(),
 	}),
 	app, priceOverlay, settings,
-	openInstrument: instrument => commit(openInstrument(state, instrument)),
+	openInstrument: instrument => {
+		preserveMobileTimeframe();
+		commit(openInstrument(state, instrument));
+	},
 	openSearch: openPicker,
 	setTimeframe: timeframe => {
-		if (state.activeTabId) commit(setTimeframe(state, state.activeTabId, timeframe));
+		saveMobileTimeframe(timeframe);
+		render();
 	},
 	setRange: setDateRange,
 	setIndicators: applyIndicators,
 	fitChart: () => chart?.chart.timeScale().fitContent(),
-	setLayout: enabled => chart?.setMobileLayout(enabled),
+	setLayout: enabled => {
+		chart?.setMobileLayout(enabled);
+		const currentTab = state.tabs.find(tab => tab.id === state.activeTabId);
+		if (chart && currentTab) {
+			const expected = resolveActiveTimeframe(enabled, state.preferences[currentTab.instrumentKey].timeframe, mobileTimeframe);
+			if (renderedTimeframe && expected !== renderedTimeframe) render();
+		}
+	},
 });
 
 function setDateRange(seconds: number): void {
 	if (!chart || !state.activeTabId || candleCount === 0) return;
 	const tab = state.tabs.find(item => item.id === state.activeTabId);
 	if (!tab) return;
-	const timeframe = state.preferences[tab.instrumentKey].timeframe;
+	const timeframe = resolveActiveTimeframe(mobile.isMobile(), state.preferences[tab.instrumentKey].timeframe, mobileTimeframe);
 	const bars = seconds === 0 ? candleCount : Math.min(candleCount, Math.ceil(seconds / TIMEFRAME_SECONDS[timeframe]));
 	chart.chart.timeScale().setVisibleLogicalRange({ from: candleCount - bars, to: candleCount + 3 });
 }
@@ -440,7 +478,10 @@ function renderSearch(): void {
 		copy.append(element('strong', '', instrument.symbol.replace('-', ' / ')), element('small', '', marketFor(instrument).name));
 		button.append(coinBadge(instrument), copy, element('span', 'search-venue', `BINANCE · ${marketLabel(instrument)}`), icon('plus'));
 		button.onclick = () => {
-			if (mobile.isMobile()) mobile.showChart();
+			if (mobile.isMobile()) {
+				preserveMobileTimeframe();
+				mobile.showChart();
+			}
 			commit(openInstrument(state, instrument));
 			picker.close();
 		};
@@ -524,15 +565,13 @@ function renderPaneCornerActions(paneId: PaneId, label: string, activeOrder: Pan
 
 	if (isSubPane) {
 		const def = getCatalogIndicator(paneId);
-		const cfgBtn = iconButton('settings', `设置 ${def?.shortName ?? paneId}`, () => openIndicatorDropdown(paneId));
-		cfgBtn.className = 'pane-corner-btn';
 		const closeBtn = iconButton('close', `移除 ${def?.shortName ?? paneId}`, () => {
 			if (isMaximized) chart?.setMaximizedPane(null);
 			setIndicatorEnabled(settings, paneId, false);
 			applyIndicators();
 		});
 		closeBtn.className = 'pane-corner-btn';
-		bar.append(cfgBtn, closeBtn);
+		bar.append(closeBtn);
 	}
 
 	const bounds = lastChartLayout.panes[paneId];
@@ -696,11 +735,13 @@ function render(): void {
 	updateIndicatorLabels();
 	marketStatus.hidden = !active;
 	const preference = active ? state.preferences[active.instrumentKey] : undefined;
-	timeframeUI.update(preference?.timeframe);
-	mobile.update(preference?.instrument, preference?.timeframe ?? '1h', quotes);
+	const activeTimeframe = preference ? resolveActiveTimeframe(mobile.isMobile(), preference.timeframe, mobileTimeframe) : undefined;
+	renderedTimeframe = activeTimeframe;
+	timeframeUI.update(activeTimeframe);
+	mobile.update(preference?.instrument, activeTimeframe ?? '1h', quotes);
 	renderDetail(preference?.instrument);
 	symbolButton.replaceChildren(icon('search'), element('span', '', preference ? symbolLabel(preference.instrument) : '搜索交易对'));
-	if (!active || !preference) {
+	if (!active || !preference || !activeTimeframe) {
 		title.textContent = '你的下一个机会，从这里开始';
 		emptyState.hidden = false;
 		emptyState.replaceChildren(icon('candles'), element('h2', '', '打开一个交易对'), element('p', '', '已关闭交易对的周期设置会保留。'));
@@ -709,7 +750,7 @@ function render(): void {
 		emptyState.append(open);
 		return;
 	}
-	title.replaceChildren(coinBadge(preference.instrument), element('span', '', `${marketFor(preference.instrument).name} / USDT · ${marketLabel(preference.instrument)}`), element('span', 'chart-meta', `· ${TIMEFRAME_LONG_LABELS[preference.timeframe]} · BINANCE`));
+	title.replaceChildren(coinBadge(preference.instrument), element('span', '', `${marketFor(preference.instrument).name} / USDT · ${marketLabel(preference.instrument)}`), element('span', 'chart-meta', `· ${TIMEFRAME_LONG_LABELS[activeTimeframe]} · BINANCE`));
 	emptyState.hidden = false;
 	emptyState.replaceChildren(element('p', '', '正在加载行情…'));
 	const currentChart = createTerminalChart(stage, settings, renderOhlc, applyPaneLayout);
@@ -718,7 +759,7 @@ function render(): void {
 	drawingSession = createDrawingSession(
 		currentChart,
 		active.instrumentKey,
-		TIMEFRAME_SECONDS[preference.timeframe],
+		TIMEFRAME_SECONDS[activeTimeframe],
 		(message, error) => drawingUI.setStatus(message, error),
 		() => { if (current()) drawingUI.setReady(true); }
 	);
@@ -729,7 +770,7 @@ function render(): void {
 	currentChart.chart.applyOptions({ crosshair: { mode: crosshairVisible ? CrosshairMode.Normal : CrosshairMode.Hidden } });
 	currentChart.setPriceFormat(priceTick(preference.instrument));
 	const current = (): boolean => version === renderVersion && chart === currentChart;
-	feed = startCandleFeed(provider, preference.instrument, preference.timeframe, {
+	feed = startCandleFeed(provider, preference.instrument, activeTimeframe, {
 		onSnapshot: (candles, initial) => {
 			if (!current()) return;
 			candleCount = candles.length;
@@ -870,6 +911,8 @@ window.addEventListener('pagehide', onPageHide);
 window.addEventListener('pageshow', onPageShow);
 const clockTimer = window.setInterval(updateClock, 30000);
 if (import.meta.hot) import.meta.hot.dispose(() => {
+	stopChartPinch();
+	stopViewportZoomGuard();
 	timeframeUI.destroy();
 	mobile.destroy();
 	onPageHide();

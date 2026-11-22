@@ -1,6 +1,7 @@
 import { TIMEFRAMES, type Timeframe } from '@terminal/domain';
 
 export const TIMEFRAME_STORAGE_KEY = 'crypto-terminal.timeframes.v1';
+export const MOBILE_TIMEFRAME_STORAGE_KEY = 'crypto-terminal.mobile-timeframe.v1';
 
 export type TimeframeGroupId = 'minutes' | 'hours' | 'days';
 
@@ -108,4 +109,23 @@ export function visibleToolbarTimeframes(prefs: TimeframePreferences, active?: T
 		return [active, ...list];
 	}
 	return list;
+}
+
+export function parseMobileTimeframe(value: unknown): Timeframe {
+	if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.timeframe !== 'string' || !VALID_TIMEFRAMES.has(value.timeframe)) {
+		throw new Error('Invalid mobile timeframe');
+	}
+	return value.timeframe as Timeframe;
+}
+
+export function serializeMobileTimeframe(timeframe: Timeframe): string {
+	return JSON.stringify({ schemaVersion: 1, timeframe });
+}
+
+/**
+ * Desktop keeps per-tab/per-instrument timeframes; mobile carries the current timeframe across instrument switches
+ * without overwriting desktop tab preferences.
+ */
+export function resolveActiveTimeframe(isMobile: boolean, tabTimeframe: Timeframe, mobileTimeframe?: Timeframe): Timeframe {
+	return isMobile ? (mobileTimeframe ?? tabTimeframe) : tabTimeframe;
 }

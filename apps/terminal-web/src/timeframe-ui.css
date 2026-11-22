@@ -9,7 +9,7 @@
 .period-fav-button:hover { background: #24262e; color: #f0f3fa; }
 .period-fav-button[aria-pressed="true"] { background: #2a2e39; color: #ffffff; font-weight: 600; }
 
-.timeframe-dropdown { position: fixed; z-index: 35; max-height: min(540px, calc(100dvh - 96px)); overflow-y: auto; padding: 6px 0; background: #14171f; color: #d1d4dc; border: 1px solid #2e323e; border-radius: 8px; box-shadow: 0 14px 40px #000b; scrollbar-width: thin; scrollbar-color: #363a45 transparent; }
+.timeframe-dropdown { position: fixed; z-index: 35; max-height: min(540px, calc(100dvh - 96px)); overflow-y: auto; padding: 6px 0; background: #14171f; color: #d1d4dc; border: 1px solid #2e323e; border-radius: 8px; box-shadow: 0 14px 40px #000b; scrollbar-width: thin; scrollbar-color: #363a45 transparent; transform-origin: top left; animation: dropdown-pop .16s cubic-bezier(.22, 1, .36, 1); }
 .timeframe-group { padding: 4px 0; }
 .timeframe-group + .timeframe-group { border-top: 1px solid #262934; margin-top: 2px; padding-top: 6px; }
 .timeframe-group-head { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: 5px 14px; font-size: 11px; color: #787b86; letter-spacing: .3px; }

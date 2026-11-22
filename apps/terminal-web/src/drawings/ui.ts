@@ -7,7 +7,14 @@ import { createDrawingToolbar, type CursorMode } from './toolbar';
 import type { DrawingSession } from './session';
 import './drawing.css';
 
-export function createDrawingUI(app: HTMLElement, rail: HTMLElement, overlay: HTMLElement, onToolChange?: (active: boolean) => void, onCursorChange: (mode: CursorMode) => void = () => {}) {
+export function createDrawingUI(
+	app: HTMLElement,
+	rail: HTMLElement,
+	overlay: HTMLElement,
+	onToolChange?: (active: boolean) => void,
+	onCursorChange: (mode: CursorMode) => void = () => {},
+	onHistoryChange?: (canUndo: boolean, canRedo: boolean) => void,
+) {
 	let session: DrawingSession | undefined;
 	let unsubscribe: (() => void) | undefined;
 	let state: DrawingManagerState | undefined;
@@ -17,6 +24,7 @@ export function createDrawingUI(app: HTMLElement, rail: HTMLElement, overlay: HT
 	const toolbar = createDrawingToolbar(app, rail, onCursorChange);
 	const dialog = (title: string): { dialog: HTMLDialogElement; body: HTMLDivElement } => {
 		const dialog = element('dialog', 'drawing-dialog');
+		dialog.tabIndex = -1;
 		const head = element('div', 'dialog-heading');
 		head.append(element('h2', '', title), iconButton('close', `关闭${title}`, () => dialog.close()));
 		const body = element('div', 'drawing-dialog-body'); dialog.append(head, body); app.append(dialog);
@@ -48,7 +56,7 @@ export function createDrawingUI(app: HTMLElement, rail: HTMLElement, overlay: HT
 		}
 		if (!catalog.childElementCount) catalog.append(element('p', 'drawing-empty', '没有找到匹配的绘图工具'));
 	}
-	function openTools(): void { if (!session || !ready) return; search.value = ''; renderTools(); tools.dialog.showModal(); }
+	function openTools(): void { if (!session || !ready) return; search.value = ''; renderTools(); tools.dialog.showModal(); tools.dialog.focus({ preventScroll: true }); }
 	search.oninput = renderTools;
 
 	const properties = createDrawingProperties(app, overlay, () => session, () => openObjects());
@@ -74,11 +82,12 @@ export function createDrawingUI(app: HTMLElement, rail: HTMLElement, overlay: HT
 			const url = URL.createObjectURL(blob); const link = element('a'); link.href = url; link.download = 'crypto-terminal-drawings.json'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 		}));
 	}
-	function openObjects(): void { if (!session) return; renderObjects(); objects.dialog.showModal(); }
+	function openObjects(): void { if (!session) return; renderObjects(); objects.dialog.showModal(); objects.dialog.focus({ preventScroll: true }); }
 	function update(next: DrawingManagerState): void {
 		state = next; const tool = next.activeTool ? getToolDefinition(next.activeTool) : undefined;
 		toolbar.update(next);
 		onToolChange?.(Boolean(tool));
+		onHistoryChange?.(ready && next.canUndo, ready && next.canRedo);
 		properties.update(next, ready);
 		hint.hidden = !tool;
 		hint.textContent = tool
@@ -102,14 +111,16 @@ export function createDrawingUI(app: HTMLElement, rail: HTMLElement, overlay: HT
 			if (state) update(state);
 		},
 		setStatus(message: string, error: boolean) {
-			saveStatus.textContent = message;
-			saveStatus.classList.toggle('error', error);
-			saveStatus.hidden = !message;
+			const show = error && Boolean(message);
+			saveStatus.textContent = show ? message : '';
+			saveStatus.classList.toggle('error', show);
+			saveStatus.hidden = !show;
 		},
 		attach(next?: DrawingSession) {
 			unsubscribe?.(); properties.close(); session = next; state = undefined; ready = false;
 			toolbar.attach(next?.manager);
 			onToolChange?.(false);
+			onHistoryChange?.(false, false);
 
 			if (next) {
 				const stateUnsub = next.manager.subscribeStateChange(update);

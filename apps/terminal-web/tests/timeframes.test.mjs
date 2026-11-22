@@ -3,8 +3,8 @@ import test from 'node:test';
 import { TIMEFRAMES, TIMEFRAME_SECONDS } from '@terminal/domain';
 import {
 	DEFAULT_FAVORITE_TIMEFRAMES, TIMEFRAME_GROUPS, TIMEFRAME_LONG_LABELS, TIMEFRAME_SHORT_LABELS,
-	defaultTimeframePreferences, parseTimeframePreferences, toggleFavoriteTimeframe, toggleTimeframeGroup,
-	visibleToolbarTimeframes,
+	defaultTimeframePreferences, parseMobileTimeframe, parseTimeframePreferences, resolveActiveTimeframe,
+	serializeMobileTimeframe, toggleFavoriteTimeframe, toggleTimeframeGroup, visibleToolbarTimeframes,
 } from '../src/data/timeframes.ts';
 
 test('timeframe catalog covers all Binance spot/perpetual intervals with labels and seconds', () => {
@@ -52,5 +52,19 @@ test('timeframe preferences validation rejects unknown intervals, duplicates and
 		{ ...valid, collapsedGroups: ['minutes', 'minutes'] },
 	]) {
 		assert.throws(() => parseTimeframePreferences(bad));
+	}
+});
+
+test('mobile timeframe persists independently and carries across instrument switches without affecting desktop tabs', () => {
+	const raw = serializeMobileTimeframe('15m');
+	assert.equal(parseMobileTimeframe(JSON.parse(raw)), '15m');
+	// Mobile keeps its current timeframe across instruments; desktop always honors the tab timeframe.
+	assert.equal(resolveActiveTimeframe(true, '4h', '15m'), '15m');
+	assert.equal(resolveActiveTimeframe(true, '1d', '15m'), '15m');
+	assert.equal(resolveActiveTimeframe(true, '4h', undefined), '4h');
+	assert.equal(resolveActiveTimeframe(false, '4h', '15m'), '4h');
+	assert.equal(resolveActiveTimeframe(false, '1d', '15m'), '1d');
+	for (const bad of [{ schemaVersion: 2, timeframe: '15m' }, { schemaVersion: 1, timeframe: '2s' }, '15m', null]) {
+		assert.throws(() => parseMobileTimeframe(bad));
 	}
 });

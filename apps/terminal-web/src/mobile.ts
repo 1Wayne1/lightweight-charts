@@ -1,6 +1,6 @@
 import { instrumentKey, type ConnectionState, type Instrument, type MarketQuote, type Timeframe } from '@terminal/domain';
 import type { IndicatorSettings } from './chart';
-import { TIMEFRAME_GROUPS, TIMEFRAME_LONG_LABELS } from './data/timeframes';
+import { TIMEFRAME_GROUPS, TIMEFRAME_LONG_LABELS, TIMEFRAME_SHORT_LABELS } from './data/timeframes';
 import { HoldSwitcher } from './hold-switcher';
 import { renderIndicatorPanel } from './indicator-ui';
 import { coinBadge, formatPrice, instruments, marketFor, marketLabel, symbolLabel } from './markets';
@@ -32,8 +32,10 @@ export function createMobileUI(options: MobileOptions) {
 	let page: 'watchlist' | 'chart' = 'chart';
 	let active: Instrument | undefined;
 	let timeframe: Timeframe = '1h';
+	let fullscreen = false;
 	let quoteMap = new Map<string, MarketQuote>();
 	const cleanups: (() => void)[] = [];
+
 	const watchPage = element('section', 'mobile-watch-page');
 	watchPage.id = 'mobile-watch-page';
 	watchPage.setAttribute('aria-label', '手机自选表');
@@ -49,125 +51,299 @@ export function createMobileUI(options: MobileOptions) {
 	const watchRows = element('div', 'mobile-watch-rows');
 	watchPage.append(watchHeader, watchTitle, watchRows);
 
+	// TradingView-inspired bottom chart action bar: symbol drum, timeframe, tools, quick undo, and fullscreen toggle.
 	const chartBar = element('div', 'mobile-chartbar');
 	const symbol = element('button', 'mobile-symbol');
 	symbol.type = 'button';
-	symbol.setAttribute('aria-label', '切换交易对，长按并上下滑动');
+	symbol.setAttribute('aria-label', '切换交易对，点击搜索或上下滑动切换');
 	symbol.setAttribute('aria-expanded', 'false');
 	symbol.setAttribute('aria-controls', 'mobile-symbol-wheel');
-	symbol.title = '轻点搜索；长按后上下滑动，松手切换';
+	symbol.title = '轻点搜索；按住直接上下滑动，松手切换';
+	const symbolDrumTrack = element('span', 'symbol-drum-track');
+	symbol.append(symbolDrumTrack);
+
 	const period = element('button', 'mobile-period');
+	period.type = 'button';
 	period.setAttribute('aria-label', '选择日期范围和周期');
 	period.onclick = () => openPeriodSheet();
+
+	const toolStrip = element('div', 'mobile-tool-strip');
 	const drawButton = iconButton('brush', '绘图工具', () => options.openDrawings());
 	drawButton.setAttribute('aria-pressed', 'false');
 	const indicatorButton = iconButton('indicator', '手机图表指标', () => openIndicators());
+	const objectsButton = iconButton('layers', '绘图对象与备份', () => options.openDrawingObjects());
 	const moreButton = iconButton('more', '图表选项', () => openChartOptions());
-	const fitButton = iconButton('fit', '适应图表', () => options.fitChart());
-	chartBar.append(symbol, period, drawButton, indicatorButton, moreButton, fitButton);
+	toolStrip.append(drawButton, indicatorButton, objectsButton, moreButton);
+
+	const rightActions = element('div', 'mobile-bar-end');
+	const quickUndo = iconButton('undo', '手机撤销画线', () => options.drawingHistory().undo());
+	quickUndo.classList.add('mobile-quick-undo');
+	quickUndo.disabled = true;
+	const fullscreenButton = iconButton('maximize', '全屏图表', () => setFullscreen(!fullscreen));
+	fullscreenButton.classList.add('mobile-fullscreen-btn');
+	fullscreenButton.setAttribute('aria-pressed', 'false');
+	rightActions.append(quickUndo, fullscreenButton);
+	chartBar.append(symbol, period, toolStrip, rightActions);
+
 	const navigation = element('nav', 'mobile-navigation');
 	navigation.setAttribute('aria-label', '手机主导航');
 	const watchTab = element('button', 'mobile-nav-item');
+	watchTab.type = 'button';
 	watchTab.append(icon('list'), element('span', '', '自选表'));
 	watchTab.setAttribute('aria-controls', watchPage.id);
 	watchTab.onclick = () => showPage('watchlist');
 	const chartTab = element('button', 'mobile-nav-item');
+	chartTab.type = 'button';
 	chartTab.append(icon('candles'), element('span', '', '图表'));
 	chartTab.onclick = () => showPage('chart');
 	navigation.append(watchTab, chartTab);
 	const quoteLine = element('div', 'mobile-chart-quote');
 	options.priceOverlay.insertBefore(quoteLine, options.priceOverlay.children[1] ?? null);
 
-	// Shared light bottom sheet: period, indicators, and chart actions.
+	function setFullscreen(next: boolean): void {
+		if (fullscreen === next) return;
+		fullscreen = next;
+		app.classList.toggle('mobile-fullscreen', fullscreen);
+		fullscreenButton.replaceChildren(icon(fullscreen ? 'minimize' : 'maximize'));
+		const label = fullscreen ? '退出全屏' : '全屏图表';
+		fullscreenButton.title = label;
+		fullscreenButton.setAttribute('aria-label', label);
+		fullscreenButton.setAttribute('aria-pressed', String(fullscreen));
+	}
+
+	// Shared light bottom sheet with smooth enter/exit transitions and live drag-to-dismiss.
 	const sheet = element('dialog', 'mobile-sheet');
+	sheet.tabIndex = -1;
 	sheet.setAttribute('aria-labelledby', 'mobile-sheet-title');
 	const handle = element('button', 'sheet-handle');
+	handle.type = 'button';
 	handle.setAttribute('aria-label', '展开或收起面板');
 	handle.append(element('span'));
 	handle.onclick = () => sheet.classList.toggle('expanded');
 	const sheetHeader = element('div', 'mobile-sheet-header');
 	const sheetTitle = element('h2');
 	sheetTitle.id = 'mobile-sheet-title';
-	sheetHeader.append(sheetTitle, iconButton('close', '关闭底部面板', () => sheet.close()));
+	const closeSheetBtn = iconButton('close', '关闭底部面板', () => closeSheetAnimated());
+	sheetHeader.append(sheetTitle, closeSheetBtn);
 	const sheetBody = element('div', 'mobile-sheet-body');
 	sheet.append(handle, sheetHeader, sheetBody);
+
+	let sheetCloseTimer: ReturnType<typeof setTimeout> | undefined;
+	function finishSheetClose(): void {
+		clearTimeout(sheetCloseTimer);
+		sheetCloseTimer = undefined;
+		sheet.classList.remove('is-open', 'is-closing', 'is-dragging');
+		sheet.style.transform = '';
+		if (sheet.open) sheet.close();
+	}
+	function closeSheetAnimated(immediate = false): void {
+		clearTimeout(sheetCloseTimer);
+		sheetCloseTimer = undefined;
+		if (!sheet.open) return;
+		if (immediate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+			finishSheetClose();
+			return;
+		}
+		sheet.classList.remove('is-open', 'is-dragging');
+		sheet.classList.add('is-closing');
+		sheet.style.transform = '';
+		sheetCloseTimer = setTimeout(finishSheetClose, 240);
+	}
+	sheet.addEventListener('cancel', () => {
+		clearTimeout(sheetCloseTimer);
+		sheetCloseTimer = undefined;
+		sheet.classList.remove('is-open', 'is-closing', 'is-dragging');
+		sheet.style.transform = '';
+	});
 	sheet.addEventListener('click', event => {
 		if (event.target === sheet) {
 			const rect = sheet.getBoundingClientRect();
-			if (event.clientY < rect.top || event.clientX < rect.left || event.clientX > rect.right) sheet.close();
+			if (event.clientY < rect.top || event.clientX < rect.left || event.clientX > rect.right) closeSheetAnimated();
 		}
 	});
 	let dragStart: number | undefined;
+	let dragDelta = 0;
 	let handleDragged = false;
 	handle.addEventListener('pointerdown', event => {
 		if (!event.isPrimary) return;
 		dragStart = event.clientY;
+		dragDelta = 0;
 		handleDragged = false;
-		handle.setPointerCapture(event.pointerId);
+		sheet.classList.add('is-dragging');
+		try { handle.setPointerCapture(event.pointerId); } catch { /* ignore */ }
 	});
 	handle.addEventListener('pointermove', event => {
-		if (dragStart === undefined || !handle.hasPointerCapture(event.pointerId)) return;
-		const delta = event.clientY - dragStart;
-		if (Math.abs(delta) < 24) return;
-		handleDragged = true;
-		if (delta < 0) sheet.classList.add('expanded');
-		else if (delta > 90) sheet.close();
-		else sheet.classList.remove('expanded');
+		if (dragStart === undefined) return;
+		dragDelta = event.clientY - dragStart;
+		if (Math.abs(dragDelta) >= 10) handleDragged = true;
+		if (dragDelta > 0) {
+			sheet.style.transform = `translate3d(0, ${dragDelta}px, 0)`;
+		} else {
+			sheet.style.transform = `translate3d(0, ${Math.max(-28, dragDelta * 0.25)}px, 0)`;
+		}
 	});
-	handle.addEventListener('pointerup', () => { dragStart = undefined; });
-	handle.addEventListener('pointercancel', () => { dragStart = undefined; });
+	const endSheetDrag = (): void => {
+		if (dragStart === undefined) return;
+		const delta = dragDelta;
+		dragStart = undefined;
+		dragDelta = 0;
+		sheet.classList.remove('is-dragging');
+		if (delta > 85) {
+			closeSheetAnimated();
+			return;
+		}
+		sheet.style.transform = '';
+		if (delta < -38) sheet.classList.add('expanded');
+		else if (delta > 32 && sheet.classList.contains('expanded')) sheet.classList.remove('expanded');
+	};
+	handle.addEventListener('pointerup', endSheetDrag);
+	handle.addEventListener('pointercancel', endSheetDrag);
 	handle.addEventListener('click', event => {
 		if (handleDragged) { event.preventDefault(); event.stopImmediatePropagation(); handleDragged = false; }
 	}, { capture: true });
 
+	// Smooth 3D cylinder symbol wheel matching TradingView's compact proportion and size falloff.
 	const wheel = element('div', 'mobile-symbol-wheel');
 	wheel.id = 'mobile-symbol-wheel';
 	wheel.hidden = true;
 	wheel.setAttribute('role', 'listbox');
 	wheel.setAttribute('aria-label', '滑动选择交易对');
-	const wheelRows = element('div', 'symbol-wheel-rows');
-	const wheelHint = element('div', 'symbol-wheel-hint', '上下滑动 · 松手切换');
-	wheel.append(wheelRows, wheelHint);
+	const wheelViewport = element('div', 'symbol-wheel-viewport');
+	const wheelTrack = element('div', 'symbol-wheel-track');
+	wheelViewport.append(wheelTrack);
+	wheel.append(wheelViewport);
 	app.append(watchPage, chartBar, navigation, sheet, wheel);
 
 	let previewIndex = 0;
+	let targetPos = 0;
+	let displayPos = 0;
+	let wheelOpen = false;
+	let wheelFrame: number | undefined;
+	let wheelCloseTimer: ReturnType<typeof setTimeout> | undefined;
 	let keyboardWheel = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let pointerId: number | undefined;
 	let suppressClick = false;
 	const gesture = new HoldSwitcher();
+	const wrapIndex = (idx: number, len: number): number => len > 0 ? ((idx % len) + len) % len : 0;
 	const activeIndex = (): number => Math.max(0, instruments.findIndex(item => active && instrumentKey(item) === instrumentKey(active)));
 
-	function renderSymbol(index = activeIndex()): void {
-		symbol.replaceChildren();
-		if (!active && wheel.hidden) {
-			symbol.append(element('span', 'symbol-current', '搜索交易对'));
+	// Fixed pool of 9 virtual slots for seamless infinite circular cylinder scrolling.
+	const WHEEL_OFFSETS = [-4, -3, -2, -1, 0, 1, 2, 3, 4] as const;
+	const wheelSlots = WHEEL_OFFSETS.map(() => {
+		const row = element('div', 'symbol-wheel-row');
+		row.setAttribute('role', 'option');
+		row.setAttribute('aria-selected', 'false');
+		wheelTrack.append(row);
+		return { row, key: '' };
+	});
+	// Fixed pool of 3 virtual slots for the bottom-left circular symbol drum.
+	const DRUM_OFFSETS = [-1, 0, 1] as const;
+	const drumSlots = DRUM_OFFSETS.map(() => {
+		const item = element('span', 'symbol-drum-item');
+		symbolDrumTrack.append(item);
+		return { item, text: '' };
+	});
+
+	function wheelCylinderRadius(): number {
+		return window.matchMedia('(max-width: 1100px) and (max-height: 600px) and (orientation: landscape)').matches ? 78 : 96;
+	}
+
+	function positionSymbolDrum(pos: number, animate = false): void {
+		const count = instruments.length;
+		if ((!active && !wheelOpen) || count === 0) {
+			symbolDrumTrack.classList.remove('is-animated');
+			drumSlots[0].item.textContent = '';
+			drumSlots[1].item.textContent = '搜索交易对';
+			drumSlots[1].item.classList.add('is-current');
+			drumSlots[1].item.style.transform = 'translate3d(0, 0, 0)';
+			drumSlots[2].item.textContent = '';
+			drumSlots[0].text = drumSlots[1].text = drumSlots[2].text = '';
 			return;
 		}
-		for (const offset of [-1, 0, 1]) {
-			const item = instruments[index + offset];
-			symbol.append(element('span', offset === 0 ? 'symbol-current' : 'symbol-neighbor', item ? symbolLabel(item) : ''));
+		const rowHeight = symbol.clientHeight > 0 && symbol.clientHeight <= 44 ? 19 : 21;
+		const center = Math.round(pos);
+		const frac = pos - center;
+		symbolDrumTrack.classList.toggle('is-animated', animate);
+		for (let i = 0; i < DRUM_OFFSETS.length; i++) {
+			const offset = DRUM_OFFSETS[i];
+			const slot = drumSlots[i];
+			const item = instruments[wrapIndex(center + offset, count)];
+			const label = symbolLabel(item);
+			if (slot.text !== label) {
+				slot.text = label;
+				slot.item.textContent = label;
+			}
+			const y = (offset - frac) * rowHeight;
+			slot.item.style.transform = `translate3d(0, ${y.toFixed(2)}px, 0)`;
+			slot.item.classList.toggle('is-current', offset === 0);
 		}
 	}
 
-	function preview(index: number): void {
-		previewIndex = index;
-		wheelHint.textContent = keyboardWheel ? '↑ ↓ 选择 · Enter 确认 · Esc 取消' : '上下滑动 · 松手切换';
-		wheelRows.replaceChildren();
-		for (let offset = -3; offset <= 3; offset++) {
-			const item = instruments[index + offset];
-			const row = element('div', `symbol-wheel-row distance-${Math.abs(offset)}`);
-			row.setAttribute('role', 'option');
-			row.id = `wheel-option-${index + offset}`;
-			row.setAttribute('aria-selected', String(offset === 0));
-			if (item) row.append(coinBadge(item), element('span', '', symbolLabel(item)));
-			else row.setAttribute('aria-hidden', 'true');
-			wheelRows.append(row);
+	function renderWheelFrame(): void {
+		wheelFrame = undefined;
+		if (!wheelOpen && wheel.hidden) return;
+		const count = instruments.length;
+		if (count === 0) return;
+		const diff = targetPos - displayPos;
+		if (Math.abs(diff) < 0.002) {
+			displayPos = targetPos;
+		} else {
+			displayPos += diff * 0.34;
+			wheelFrame = requestAnimationFrame(renderWheelFrame);
 		}
-		wheel.hidden = false;
-		symbol.setAttribute('aria-expanded', 'true');
-		wheel.setAttribute('aria-activedescendant', `wheel-option-${index}`);
-		renderSymbol(index);
+		const radius = wheelCylinderRadius();
+		const angleStep = 0.34;
+		const center = Math.round(displayPos);
+		for (let i = 0; i < WHEEL_OFFSETS.length; i++) {
+			const offset = WHEEL_OFFSETS[i];
+			const virtualIdx = center + offset;
+			const itemIdx = wrapIndex(virtualIdx, count);
+			const item = instruments[itemIdx];
+			const key = instrumentKey(item);
+			const slot = wheelSlots[i];
+			if (slot.key !== key) {
+				slot.key = key;
+				slot.row.id = `wheel-option-${itemIdx}`;
+				slot.row.replaceChildren(coinBadge(item), element('span', '', symbolLabel(item)));
+			}
+			const delta = virtualIdx - displayPos;
+			const abs = Math.abs(delta);
+			const angle = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, delta * angleStep));
+			const y = Math.sin(angle) * radius;
+			const scale = Math.pow(0.77, abs);
+			const opacity = Math.pow(0.56, abs);
+			slot.row.style.visibility = 'visible';
+			slot.row.style.transform = `translate3d(0, ${y.toFixed(2)}px, 0) scale(${scale.toFixed(3)})`;
+			slot.row.style.opacity = opacity.toFixed(3);
+			slot.row.classList.toggle('is-center', offset === 0);
+			slot.row.setAttribute('aria-selected', String(offset === 0));
+		}
+		positionSymbolDrum(displayPos, false);
+	}
+
+	function scheduleWheelFrame(): void {
+		if (wheelFrame === undefined) wheelFrame = requestAnimationFrame(renderWheelFrame);
+	}
+
+	function preview(index: number, continuousPos = index): void {
+		previewIndex = wrapIndex(index, instruments.length);
+		targetPos = continuousPos;
+		if (!wheelOpen) {
+			clearTimeout(wheelCloseTimer);
+			wheelCloseTimer = undefined;
+			wheelOpen = true;
+			displayPos = continuousPos;
+			wheel.hidden = false;
+			symbol.setAttribute('aria-expanded', 'true');
+			renderWheelFrame();
+			requestAnimationFrame(() => {
+				if (wheelOpen) wheel.classList.add('is-open');
+			});
+		} else {
+			scheduleWheelFrame();
+		}
+		wheel.setAttribute('aria-activedescendant', `wheel-option-${previewIndex}`);
 	}
 
 	function clearGesture(): void {
@@ -184,10 +360,24 @@ export function createMobileUI(options: MobileOptions) {
 			}
 		}
 		keyboardWheel = false;
-		wheel.hidden = true;
+		if (wheelFrame !== undefined) {
+			cancelAnimationFrame(wheelFrame);
+			wheelFrame = undefined;
+		}
+		if (wheelOpen) {
+			wheelOpen = false;
+			wheel.classList.remove('is-open');
+			clearTimeout(wheelCloseTimer);
+			wheelCloseTimer = setTimeout(() => {
+				wheelCloseTimer = undefined;
+				if (!wheelOpen) wheel.hidden = true;
+			}, 180);
+		} else {
+			wheel.hidden = true;
+		}
 		symbol.setAttribute('aria-expanded', 'false');
 		wheel.removeAttribute('aria-activedescendant');
-		renderSymbol();
+		positionSymbolDrum(activeIndex(), true);
 	}
 
 	symbol.addEventListener('pointerdown', event => {
@@ -201,9 +391,9 @@ export function createMobileUI(options: MobileOptions) {
 			const selected = gesture.activate(event.pointerId);
 			if (selected !== null) {
 				suppressClick = true;
-				preview(selected);
+				preview(selected, gesture.position());
 			}
-		}, 320);
+		}, 260);
 	});
 	const onSymbolPointerMove = (event: PointerEvent): void => {
 		if (pointerId !== event.pointerId) return;
@@ -212,7 +402,11 @@ export function createMobileUI(options: MobileOptions) {
 			suppressClick = true;
 			clearTimeout(timer);
 		}
-		if (selected !== null && (wheel.hidden || selected !== previewIndex)) preview(selected);
+		if (selected !== null) {
+			suppressClick = true;
+			clearTimeout(timer);
+			preview(selected, gesture.position());
+		}
 	};
 	const onSymbolPointerUp = (event: PointerEvent): void => {
 		if (pointerId !== event.pointerId) return;
@@ -251,7 +445,10 @@ export function createMobileUI(options: MobileOptions) {
 			const selected = instruments[previewIndex];
 			clearGesture();
 			select(selected);
-		} else preview(Math.max(0, Math.min(instruments.length - 1, previewIndex + (event.key === 'ArrowDown' ? 1 : -1))));
+		} else {
+			const nextPos = targetPos + (event.key === 'ArrowDown' ? 1 : -1);
+			preview(wrapIndex(Math.round(nextPos), instruments.length), nextPos);
+		}
 	});
 	symbol.addEventListener('blur', () => { if (keyboardWheel) clearGesture(); });
 
@@ -262,7 +459,8 @@ export function createMobileUI(options: MobileOptions) {
 
 	function showPage(next: typeof page): void {
 		clearGesture();
-		sheet.close();
+		closeSheetAnimated(true);
+		if (next === 'watchlist' && fullscreen) setFullscreen(false);
 		page = next;
 		app.dataset.mobilePage = page;
 		watchTab.setAttribute('aria-current', page === 'watchlist' ? 'page' : 'false');
@@ -271,10 +469,18 @@ export function createMobileUI(options: MobileOptions) {
 
 	function openSheet(title: string): void {
 		clearGesture();
+		clearTimeout(sheetCloseTimer);
+		sheetCloseTimer = undefined;
+		sheet.classList.remove('is-closing', 'is-dragging', 'expanded');
+		sheet.style.transform = '';
 		sheetTitle.textContent = title;
 		sheetBody.replaceChildren();
-		sheet.classList.remove('expanded');
 		if (!sheet.open) sheet.showModal();
+		// Focus the dialog container rather than the top drag handle so Safari does not draw a blue focus ring around the handle bar.
+		sheet.focus({ preventScroll: true });
+		requestAnimationFrame(() => {
+			if (sheet.open && !sheet.classList.contains('is-closing')) sheet.classList.add('is-open');
+		});
 	}
 
 	function openPeriodSheet(): void {
@@ -282,8 +488,9 @@ export function createMobileUI(options: MobileOptions) {
 		const dateRanges = element('div', 'sheet-chips date-chips');
 		for (const [label, seconds] of [['1天', 86400], ['5天', 432000], ['1个月', 2592000], ['3个月', 7776000], ['6个月', 15552000], ['全部', 0]] as const) {
 			const button = element('button', 'sheet-chip', label);
+			button.type = 'button';
 			button.setAttribute('aria-label', `日期范围 ${label}`);
-			button.onclick = () => { options.setRange(seconds); sheet.close(); };
+			button.onclick = () => { options.setRange(seconds); closeSheetAnimated(); };
 			dateRanges.append(button);
 		}
 		sheetBody.append(dateRanges, element('h3', 'sheet-section-title', '周期'));
@@ -293,9 +500,10 @@ export function createMobileUI(options: MobileOptions) {
 			const chips = element('div', 'sheet-chips');
 			for (const value of group.timeframes) {
 				const button = element('button', 'sheet-chip', timeframeLabels[value]);
+				button.type = 'button';
 				button.setAttribute('aria-pressed', String(value === timeframe));
 				button.setAttribute('aria-label', `手机周期 ${value}`);
-				button.onclick = () => { options.setTimeframe(value); sheet.close(); };
+				button.onclick = () => { options.setTimeframe(value); closeSheetAnimated(); };
 				chips.append(button);
 			}
 			section.append(chips);
@@ -311,17 +519,22 @@ export function createMobileUI(options: MobileOptions) {
 	function openChartOptions(): void {
 		openSheet('图表选项');
 		const history = options.drawingHistory();
-		const undo = element('button', 'sheet-action', '撤销画线');
-		undo.disabled = !history.canUndo; undo.onclick = () => { history.undo(); sheet.close(); };
-		const redo = element('button', 'sheet-action', '重做画线');
-		redo.disabled = !history.canRedo; redo.onclick = () => { history.redo(); sheet.close(); };
 		const objects = element('button', 'sheet-action', '绘图对象与备份');
+		objects.type = 'button';
 		objects.disabled = !active;
-		objects.onclick = () => { sheet.close(); options.openDrawingObjects(); };
+		objects.onclick = () => { closeSheetAnimated(true); options.openDrawingObjects(); };
+		const undo = element('button', 'sheet-action', '撤销画线');
+		undo.type = 'button';
+		undo.disabled = !history.canUndo; undo.onclick = () => { history.undo(); closeSheetAnimated(); };
+		const redo = element('button', 'sheet-action', '重做画线');
+		redo.type = 'button';
+		redo.disabled = !history.canRedo; redo.onclick = () => { history.redo(); closeSheetAnimated(); };
 		const fit = element('button', 'sheet-action', '适应全部数据');
-		fit.onclick = () => { options.fitChart(); sheet.close(); };
+		fit.type = 'button';
+		fit.onclick = () => { options.fitChart(); closeSheetAnimated(); };
 		const search = element('button', 'sheet-action', '搜索交易对');
-		search.onclick = () => { sheet.close(); options.openSearch(); };
+		search.type = 'button';
+		search.onclick = () => { closeSheetAnimated(true); options.openSearch(); };
 		sheetBody.append(objects, undo, redo, fit, search, element('p', 'mobile-sheet-note', 'Binance 现货 / USDT 永续 · 周期与画线保存在本机 · 云同步未接入'));
 	}
 
@@ -336,6 +549,7 @@ export function createMobileUI(options: MobileOptions) {
 			rowPrices.clear();
 			for (const instrument of instruments) {
 				const row = element('button', 'mobile-watch-row');
+				row.type = 'button';
 				row.setAttribute('aria-label', `查看 ${instrument.symbol} ${marketLabel(instrument)} 图表`);
 				const copy = element('span', 'mobile-market-name');
 				copy.append(element('strong', '', symbolLabel(instrument)), element('small', '', `${marketFor(instrument).name} · ${marketLabel(instrument)}`));
@@ -370,10 +584,15 @@ export function createMobileUI(options: MobileOptions) {
 
 	function syncLayout(): void {
 		clearGesture();
-		sheet.close();
+		closeSheetAnimated(true);
 		app.classList.toggle('mobile-layout', media.matches);
-		if (media.matches) app.classList.remove('focus-mode', 'sidebar-open');
+		if (media.matches) {
+			app.classList.remove('focus-mode', 'sidebar-open');
+		} else if (fullscreen) {
+			setFullscreen(false);
+		}
 		options.setLayout(media.matches);
+		if (!wheelOpen) positionSymbolDrum(activeIndex(), false);
 	}
 	const onVisibility = (): void => { if (document.hidden) clearGesture(); };
 	window.addEventListener('blur', clearGesture);
@@ -400,19 +619,25 @@ export function createMobileUI(options: MobileOptions) {
 		showChart: () => showPage('chart'),
 		openIndicators,
 		setDrawingActive(enabled: boolean) { drawButton.setAttribute('aria-pressed', String(enabled)); },
+		setUndoEnabled(enabled: boolean) { quickUndo.disabled = !enabled; },
 		update(instrument: Instrument | undefined, nextTimeframe: Timeframe, quotes: Map<string, MarketQuote>) {
 			active = instrument;
 			timeframe = nextTimeframe;
 			quoteMap = quotes;
-			period.textContent = timeframeLabels[timeframe];
+			period.textContent = TIMEFRAME_SHORT_LABELS[timeframe];
+			period.title = timeframeLabels[timeframe];
 			period.disabled = !active;
 			drawButton.disabled = !active;
-			if (wheel.hidden) renderSymbol();
+			objectsButton.disabled = !active;
+			fullscreenButton.disabled = !active;
+			if (!wheelOpen) positionSymbolDrum(activeIndex(), true);
 			renderQuotes();
 		},
 		destroy() {
 			clearGesture();
-			sheet.close();
+			clearTimeout(wheelCloseTimer);
+			closeSheetAnimated(true);
+			setFullscreen(false);
 			for (const cleanup of cleanups) cleanup();
 			for (const node of [watchPage, chartBar, navigation, sheet, wheel, quoteLine]) node.remove();
 			app.classList.remove('mobile-layout');
