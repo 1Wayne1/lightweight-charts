@@ -7,9 +7,25 @@ import {
 	movePaneOrder, nextLinePreset, setIndicatorEnabled,
 	type IndicatorSettings, type MovingAverageLineConfig,
 } from './data/indicators';
+import { renderTradingViewColorPicker } from './drawings/color-picker';
 import { element, icon } from './ui';
 
 export type IndicatorTab = 'popular' | 'all' | 'active';
+
+let activeColorPopup: HTMLDivElement | undefined;
+let activeColorTrigger: HTMLButtonElement | undefined;
+let activeColorCleanup: (() => void) | undefined;
+
+export function closeIndicatorColorPopover(restoreFocus = false): void {
+	const trigger = activeColorTrigger;
+	activeColorCleanup?.();
+	activeColorCleanup = undefined;
+	activeColorPopup?.remove();
+	activeColorPopup = undefined;
+	activeColorTrigger = undefined;
+	trigger?.setAttribute('aria-expanded', 'false');
+	if (restoreFocus && trigger?.isConnected) trigger.focus({ preventScroll: true });
+}
 
 function clampNumber(value: string, min: number, max: number, integer: boolean, fallback: number): number {
 	const parsed = Number(value);
@@ -58,6 +74,85 @@ export function renderIndicatorPanel(
 		renderSidebar();
 		renderContent();
 	};
+
+	function createColorButton(label: string, getCurrent: () => string, onPick: (nextColor: string) => void): HTMLButtonElement {
+		const btn = element('button', 'ind-color-btn');
+		btn.type = 'button';
+		btn.setAttribute('aria-label', label);
+		btn.setAttribute('aria-haspopup', 'dialog');
+		btn.setAttribute('aria-expanded', 'false');
+		const swatch = element('span', 'ind-color-swatch');
+		swatch.style.backgroundColor = getCurrent();
+		btn.append(swatch);
+
+		const placePopover = (popup: HTMLDivElement): void => {
+			const rect = btn.getBoundingClientRect();
+			const bounds = popup.getBoundingClientRect();
+			const left = Math.max(8, Math.min(rect.left, window.innerWidth - bounds.width - 8));
+			const fitsBelow = rect.bottom + 6 + bounds.height <= window.innerHeight - 8;
+			const top = fitsBelow
+				? rect.bottom + 6
+				: Math.max(8, rect.top - bounds.height - 6);
+			popup.style.left = `${left}px`;
+			popup.style.top = `${top}px`;
+		};
+
+		btn.onclick = event => {
+			event.stopPropagation();
+			if (activeColorTrigger === btn && activeColorPopup) {
+				closeIndicatorColorPopover(true);
+				return;
+			}
+			closeIndicatorColorPopover();
+			activeColorTrigger = btn;
+			btn.setAttribute('aria-expanded', 'true');
+			const popup = element('div', 'drawing-property-popover tv-color-popover ind-color-popover');
+			popup.setAttribute('role', 'dialog');
+			popup.setAttribute('aria-label', label);
+			popup.tabIndex = -1;
+			const pickerHost = element('div', 'tv-color-picker-host');
+			popup.append(pickerHost);
+
+			const mountRoot = container.closest('dialog[open]') ?? container.closest('#app') ?? document.body;
+			mountRoot.append(popup);
+			activeColorPopup = popup;
+
+			renderTradingViewColorPicker({
+				container: pickerHost,
+				label,
+				current: getCurrent(),
+				onSelect: nextColor => {
+					swatch.style.backgroundColor = nextColor;
+					onPick(nextColor);
+				},
+				onResize: () => placePopover(popup),
+			});
+			placePopover(popup);
+
+			const onPointerDown = (ev: PointerEvent): void => {
+				if (ev.target instanceof Node && !popup.contains(ev.target) && !btn.contains(ev.target)) {
+					closeIndicatorColorPopover();
+				}
+			};
+			const onKeyDown = (ev: KeyboardEvent): void => {
+				if (ev.key === 'Escape') {
+					ev.preventDefault();
+					ev.stopImmediatePropagation();
+					closeIndicatorColorPopover(true);
+				}
+			};
+			const onResize = (): void => { placePopover(popup); };
+			document.addEventListener('pointerdown', onPointerDown, true);
+			window.addEventListener('keydown', onKeyDown, true);
+			window.addEventListener('resize', onResize);
+			activeColorCleanup = () => {
+				document.removeEventListener('pointerdown', onPointerDown, true);
+				window.removeEventListener('keydown', onKeyDown, true);
+				window.removeEventListener('resize', onResize);
+			};
+		};
+		return btn;
+	}
 
 	searchInput.oninput = () => {
 		query = searchInput.value.trim().toLowerCase();
@@ -181,17 +276,15 @@ export function renderIndicatorPanel(
 			vis.setAttribute('aria-label', `显示 ${kind.toUpperCase()} ${index + 1}`);
 			vis.onchange = () => { line.visible = vis.checked; onChange(); };
 
-			const color = element('input');
-			color.type = 'color';
-			color.value = line.color;
-			color.setAttribute('aria-label', `${kind.toUpperCase()} ${index + 1} 颜色`);
-			const applyLineColor = (): void => {
-				if (line.color === color.value) return;
-				line.color = color.value;
-				onChange();
-			};
-			color.oninput = applyLineColor;
-			color.onchange = applyLineColor;
+			const color = createColorButton(
+				`${kind.toUpperCase()} ${index + 1} 颜色`,
+				() => line.color,
+				nextColor => {
+					if (line.color === nextColor) return;
+					line.color = nextColor;
+					onChange();
+				},
+			);
 
 			const periodWrap = element('label', 'ind-period-field');
 			periodWrap.append(element('span', '', kind.toUpperCase()));
@@ -253,38 +346,33 @@ export function renderIndicatorPanel(
 			const resolved = indicatorPlotColors(settings, item.id);
 			const grid = element('div', 'ind-color-grid');
 			for (const spec of item.colorSpecs) {
-				const colorRow = element('label', 'ind-line-row');
-				const color = element('input');
-				color.type = 'color';
-				color.value = resolved[spec.key] ?? spec.defaultColor;
-				color.setAttribute('aria-label', `${item.shortName} ${spec.label}`);
-				const applyPlotColor = (): void => {
-					const nextColor = color.value;
-					const existing = settings.plotColors[item.id]?.[spec.key];
-					if (existing === nextColor) return;
-					settings.plotColors[item.id] = { ...(settings.plotColors[item.id] ?? {}), [spec.key]: nextColor };
-					if (spec.key === item.id) settings.colors[item.id] = nextColor;
-					onChange();
-				};
-				color.oninput = applyPlotColor;
-				color.onchange = applyPlotColor;
+				const colorRow = element('div', 'ind-line-row');
+				const color = createColorButton(
+					`${item.shortName} ${spec.label}`,
+					() => settings.plotColors[item.id]?.[spec.key] ?? resolved[spec.key] ?? spec.defaultColor,
+					nextColor => {
+						const existing = settings.plotColors[item.id]?.[spec.key];
+						if (existing === nextColor) return;
+						settings.plotColors[item.id] = { ...(settings.plotColors[item.id] ?? {}), [spec.key]: nextColor };
+						if (spec.key === item.id) settings.colors[item.id] = nextColor;
+						onChange();
+					},
+				);
 				colorRow.append(color, element('span', 'ind-period-field', spec.label));
 				grid.append(colorRow);
 			}
 			form.append(grid);
 		} else if (item.defaultColor) {
 			const colorRow = element('div', 'ind-line-row');
-			const color = element('input');
-			color.type = 'color';
-			color.value = indicatorColor(settings, item.id);
-			color.setAttribute('aria-label', `${item.shortName} 颜色`);
-			const applyIndicatorColor = (): void => {
-				if (settings.colors[item.id] === color.value) return;
-				settings.colors[item.id] = color.value;
-				onChange();
-			};
-			color.oninput = applyIndicatorColor;
-			color.onchange = applyIndicatorColor;
+			const color = createColorButton(
+				`${item.shortName} 颜色`,
+				() => indicatorColor(settings, item.id),
+				nextColor => {
+					if (settings.colors[item.id] === nextColor) return;
+					settings.colors[item.id] = nextColor;
+					onChange();
+				},
+			);
 			colorRow.append(color, element('span', 'ind-period-field', '主线条颜色'));
 			form.append(colorRow);
 		}
@@ -350,6 +438,7 @@ export function renderIndicatorPanel(
 	}
 
 	function renderContent(): void {
+		closeIndicatorColorPopover();
 		content.replaceChildren();
 		content.scrollTop = 0;
 

@@ -1,5 +1,5 @@
 import { DrawingManager, type AnchorPoint, type DrawingBar, type DrawingStyleOptions, type DrawingToolType } from '@tradingview/lwc-plugin-drawing-tools';
-import type { Candle } from '@terminal/domain';
+import type { Candle, DrawingDocument } from '@terminal/domain';
 import type { TerminalChart } from '../chart';
 import { DrawingTimeScale } from './coordinates';
 import { DrawingRepository, reconcileDrawings, restoreDrawings, type DrawingStore } from './storage';
@@ -8,7 +8,28 @@ import { DrawingStyleDefaultsRepository } from './style-defaults';
 // Keep unsaved edits available when storage fails and the user changes instruments.
 const recovery = new Map<string, DrawingStore>();
 const sharedStyleDefaults = new DrawingStyleDefaultsRepository(typeof localStorage !== 'undefined' ? localStorage : undefined);
-export function createDrawingSession(chart: TerminalChart, key: string, interval: number, onStatus: (message: string, error: boolean) => void, onReady?: () => void) {
+
+export function reloadSharedStyleDefaults(): void {
+	sharedStyleDefaults.reload();
+}
+
+export function exportSharedStyleDefaults(): Record<string, unknown> {
+	return sharedStyleDefaults.exportStore() as unknown as Record<string, unknown>;
+}
+
+export interface DrawingSessionSyncHooks {
+	onSaved?(changed: DrawingDocument[]): void;
+	onStyleDefaultChanged?(): void;
+}
+
+export function createDrawingSession(
+	chart: TerminalChart,
+	key: string,
+	interval: number,
+	onStatus: (message: string, error: boolean) => void,
+	onReady?: () => void,
+	syncHooks?: DrawingSessionSyncHooks,
+) {
 	let scale: DrawingTimeScale | undefined;
 	let rows: DrawingBar[] = [];
 	let store: DrawingStore = { schemaVersion: 1, instrumentKey: key, documents: [] };
@@ -18,6 +39,7 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 	try { repository = new DrawingRepository(localStorage, key); store = repository.load(); }
 	catch (error) { loadError = error instanceof Error ? error.message : '无法读取本机存储'; }
 	if (recovery.has(key)) store = recovery.get(key)!;
+	let lastSavedDocs = new Map<string, string>(store.documents.map(doc => [doc.id, JSON.stringify(doc)]));
 	const report = (message: string, error = false): void => onStatus(message, error);
 	const manager = new DrawingManager(chart.chart, chart.series, {
 		normalizeAnchor: point => scale?.canonical(point) ?? point,
@@ -30,6 +52,15 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 		try {
 			if (!repository || loadError) throw new Error(loadError || '本机存储不可用');
 			repository.save(store); pending = false; recovery.delete(key); report('');
+			const changed: DrawingDocument[] = [];
+			const nextMap = new Map<string, string>();
+			for (const doc of store.documents) {
+				const serialized = JSON.stringify(doc);
+				nextMap.set(doc.id, serialized);
+				if (lastSavedDocs.get(doc.id) !== serialized) changed.push(structuredClone(doc));
+			}
+			lastSavedDocs = nextMap;
+			if (changed.length > 0) syncHooks?.onSaved?.(changed);
 		} catch (error) { recovery.set(key, store); report(`画线未保存：${error instanceof Error ? error.message : '存储失败'}`, true); }
 	};
 	const unsubscribe = manager.subscribeStateChange(() => {
@@ -41,10 +72,51 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 	});
 	const reproject = (point: AnchorPoint): AnchorPoint => typeof point.time === 'number' && scale ? scale.project({ time: point.time, price: point.price }) : point;
 	return {
+		instrumentKey: key,
 		manager,
 		isReady: () => loaded,
 		rememberStyle(type: DrawingToolType, options: Partial<DrawingStyleOptions>): void {
 			sharedStyleDefaults.remember(type, options);
+			syncHooks?.onStyleDefaultChanged?.();
+		},
+		applySyncedDocuments(records: readonly DrawingDocument[]): void {
+			const merged = new Map<string, DrawingDocument>(store.documents.map(doc => [doc.id, doc]));
+			for (const record of records) {
+				if (record.instrumentKey !== key) continue;
+				merged.set(record.id, structuredClone(record));
+			}
+			store = { schemaVersion: 1, instrumentKey: key, documents: [...merged.values()] };
+			if (repository && !loadError) {
+				try {
+					repository.save(store);
+					lastSavedDocs = new Map(store.documents.map(doc => [doc.id, JSON.stringify(doc)]));
+				} catch {
+					// Keep in-memory state if repository is blocked.
+				}
+			}
+			if (loaded && scale) {
+				loading = true;
+				try { manager.importState(restoreDrawings(store, scale), false); }
+				finally { loading = false; }
+			}
+		},
+		confirmSyncedRevision(drawingId: string, revision: number): void {
+			let updated = false;
+			const docs = store.documents.map(doc => {
+				if (doc.id !== drawingId || doc.revision === revision) return doc;
+				updated = true;
+				return { ...doc, revision };
+			});
+			if (!updated) return;
+			store = { ...store, documents: docs };
+			if (repository && !loadError) {
+				try {
+					repository.save(store);
+					lastSavedDocs = new Map(store.documents.map(doc => [doc.id, JSON.stringify(doc)]));
+				} catch {
+					// Ignore if repository is blocked.
+				}
+			}
 		},
 		addHorizontalLine(price: number): void {
 			const last = rows.at(-1);

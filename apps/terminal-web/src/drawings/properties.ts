@@ -5,10 +5,10 @@ import { toolLabel } from './catalog';
 import { createAttachedTextEditor } from './text-editor';
 import { propertyProfile } from './property-profile';
 import { parseDrawingStyle } from './storage';
+import { renderTradingViewColorPicker } from './color-picker';
 import type { DrawingSession } from './session';
 import './properties.css';
 
-const COLORS = ['#ffffff', '#d1d4dc', '#9598a1', '#5d606b', '#363a45', '#131722', '#f23645', '#ff9800', '#ffeb3b', '#4caf50', '#089981', '#00bcd4', '#2962ff', '#787bff', '#9c27b0', '#e91e63', '#f7a9b1', '#ffcc80', '#fff59d', '#a5d6a7', '#80cbc4', '#80deea', '#90bff9', '#b3b5ff', '#ce93d8', '#f48fb1'];
 const STYLES = ['实线', '点线', '虚线', '长虚线', '稀疏点线'];
 const DASHES = ['solid', 'dotted', 'dashed', 'dashed', 'dotted'];
 const button = (label: string, action: () => void, className = 'drawing-button') => {
@@ -17,14 +17,6 @@ const button = (label: string, action: () => void, className = 'drawing-button')
 const lineSample = (width: number, style = 0) => {
 	const sample = element('span', 'drawing-line-sample'); sample.style.borderTopWidth = `${width}px`; sample.style.borderTopStyle = DASHES[style]; return sample;
 };
-const HEX_COLOR_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-function normalizeNativeHex(value: string): string {
-	const raw = value.trim();
-	if (/^#[0-9a-fA-F]{6}$/.test(raw)) return raw.toLowerCase();
-	if (/^#[0-9a-fA-F]{8}$/.test(raw)) return raw.slice(0, 7).toLowerCase();
-	if (/^#[0-9a-fA-F]{3}$/.test(raw)) return `#${raw[1]}${raw[1]}${raw[2]}${raw[2]}${raw[3]}${raw[3]}`.toLowerCase();
-	return '#2962ff';
-}
 
 export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, getSession: () => DrawingSession | undefined, openObjects: () => void) {
 	let state: DrawingManagerState | undefined;
@@ -67,57 +59,35 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		popup.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
 		popup.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
 	}
-	function showPopup(trigger: HTMLElement, title: string, build: (body: HTMLDivElement) => void, point?: { x: number; y: number }): void {
+	function showPopup(trigger: HTMLElement, title: string, build: (body: HTMLDivElement) => void, point?: { x: number; y: number }, options?: { hideTitle?: boolean; className?: string }): void {
 		if (popupTrigger === trigger && popup) { closePopup(true); return; }
 		closePopup(); popupTrigger = trigger; trigger.setAttribute('aria-expanded', 'true');
-		popup = element('div', 'drawing-property-popover'); popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', title); popup.tabIndex = -1;
-		popup.append(element('div', 'drawing-popover-title', title)); build(popup);
+		popup = element('div', `drawing-property-popover${options?.className ? ` ${options.className}` : ''}`); popup.setAttribute('role', 'dialog'); popup.setAttribute('aria-label', title); popup.tabIndex = -1;
+		if (!options?.hideTitle) popup.append(element('div', 'drawing-popover-title', title));
+		build(popup);
 		(dialog.open ? dialog : app).append(popup);
 		const rect = trigger.getBoundingClientRect(); placePopup(point?.x ?? rect.left, point?.y ?? rect.bottom + 6);
 		popup.querySelector<HTMLElement>('[aria-checked=true], button, input')?.focus();
 	}
 	function colorPicker(trigger: HTMLButtonElement, label: string, current: string, onSelect: (value: string) => void, opacity?: { value: number; max: number; onSelect: (value: number) => void }): void {
 		showPopup(trigger, label, body => {
-			let selected = current;
-			const swatches: Array<{ value: string; node: HTMLButtonElement }> = [];
-			const custom = element('form', 'drawing-custom-color');
-			const nativePicker = element('input', 'drawing-native-color');
-			nativePicker.type = 'color'; nativePicker.value = normalizeNativeHex(current); nativePicker.setAttribute('aria-label', `${label}取色器`);
-			const hex = element('input'); hex.value = current; hex.setAttribute('aria-label', 'HEX 颜色'); hex.pattern = '#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})'; hex.required = true; hex.maxLength = 9;
-			const apply = button('应用', () => {}); apply.type = 'submit'; custom.append(nativePicker, hex, apply);
-
-			const applyLive = (next: string, source: 'swatch' | 'native' | 'hex'): void => {
-				selected = next;
-				for (const item of swatches) item.node.setAttribute('aria-pressed', String(item.value.toLowerCase() === selected.toLowerCase()));
-				if (source !== 'hex') hex.value = selected;
-				if (source !== 'native') nativePicker.value = normalizeNativeHex(selected);
-				onSelect(selected);
-			};
-
-			const palette = element('div', 'drawing-color-grid'); palette.setAttribute('role', 'group'); palette.setAttribute('aria-label', '预设颜色');
-			for (const value of COLORS) {
-				const swatch = button('', () => applyLive(value, 'swatch'), 'drawing-color-swatch');
-				swatch.style.backgroundColor = value; swatch.setAttribute('aria-label', `颜色 ${value}`); swatch.setAttribute('aria-pressed', String(value.toLowerCase() === current.toLowerCase()));
-				swatches.push({ value, node: swatch }); palette.append(swatch);
-			}
-			nativePicker.oninput = () => applyLive(nativePicker.value, 'native');
-			hex.oninput = () => {
-				const trimmed = hex.value.trim();
-				if (HEX_COLOR_RE.test(trimmed)) applyLive(trimmed, 'hex');
-			};
-			custom.onsubmit = event => { event.preventDefault(); if (custom.reportValidity()) { applyLive(hex.value.trim(), 'hex'); closePopup(true); } };
-			body.append(palette, custom);
-			if (opacity) {
-				const row = element('label', 'drawing-opacity'); const value = element('span', '', `不透明度 ${Math.round(opacity.value * 100)}%`);
-				const slider = element('input'); slider.type = 'range'; slider.min = '0'; slider.max = String(opacity.max); slider.step = '.01'; slider.value = String(opacity.value); slider.setAttribute('aria-label', label === '文字颜色' ? '文字不透明度' : '填充不透明度');
-				slider.oninput = () => {
-					const amount = Number(slider.value);
-					value.textContent = `不透明度 ${Math.round(amount * 100)}%`;
-					opacity.onSelect(amount);
-				};
-				row.append(value, slider); body.append(row);
-			}
-		});
+			const container = element('div', 'tv-color-picker-host');
+			body.append(container);
+			renderTradingViewColorPicker({
+				container,
+				label,
+				current,
+				onSelect,
+				opacity: opacity ? {
+					...opacity,
+					label: label === '文字颜色' ? '文字不透明度' : '不透明度',
+				} : undefined,
+				onResize: () => {
+					const rect = trigger.getBoundingClientRect();
+					placePopup(rect.left, rect.bottom + 6);
+				},
+			});
+		}, undefined, { hideTitle: true, className: 'tv-color-popover' });
 	}
 	function patch(options: Partial<DrawingStyleOptions>): void {
 		const drawing = manager()?.selectedDrawing();

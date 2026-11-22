@@ -76,6 +76,17 @@ export class DrawingStyleDefaultsRepository {
 		return saved ? structuredClone(saved) : undefined;
 	}
 
+	exportStore(): DrawingStyleDefaultsStore {
+		this.ensureLoaded();
+		return { schemaVersion: 1, styles: structuredClone(this.styles) };
+	}
+
+	reload(): void {
+		this.loaded = false;
+		this.styles = {};
+		this.ensureLoaded();
+	}
+
 	remember(type: DrawingToolType, patch: Partial<DrawingStyleOptions>): void {
 		this.ensureLoaded();
 		const filtered = extractRememberableStyle(patch);

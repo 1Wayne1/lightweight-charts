@@ -167,7 +167,7 @@ export function nextLinePreset(kind: 'ma' | 'ema', existing: readonly MovingAver
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-const isHexColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+const isHexColor = (v: unknown): v is string => typeof v === 'string' && /^#[0-9a-f]{6}([0-9a-f]{2})?$/i.test(v);
 
 function parseLines(value: unknown, kind: 'ma' | 'ema'): MovingAverageLineConfig[] {
 	if (!Array.isArray(value) || value.length < 1 || value.length > MAX_MA_LINES) {
