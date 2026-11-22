@@ -23,6 +23,7 @@ export interface IndicatorSettings {
 	enabled: Record<string, boolean>;
 	params: Record<string, Record<string, number>>;
 	colors: Record<string, string>;
+	plotColors: Record<string, Record<string, string>>;
 	paneOrder: PaneId[];
 	hidden: string[];
 	legendCollapsed: boolean;
@@ -72,6 +73,7 @@ export function defaultIndicatorSettings(): IndicatorSettings {
 		enabled: { macd: true },
 		params: {},
 		colors: {},
+		plotColors: {},
 		paneOrder: ['price', 'macd'],
 		hidden: [],
 		legendCollapsed: false,
@@ -120,6 +122,17 @@ export function indicatorParams(settings: IndicatorSettings, id: string): Record
 
 export function indicatorColor(settings: IndicatorSettings, id: string): string {
 	return settings.colors[id] ?? getCatalogIndicator(id)?.defaultColor ?? '#2962ff';
+}
+
+export function indicatorPlotColors(settings: IndicatorSettings, id: string): Record<string, string> {
+	const def = getCatalogIndicator(id);
+	if (!def?.colorSpecs?.length) return {};
+	const saved = settings.plotColors[id] ?? {};
+	const resolved: Record<string, string> = {};
+	for (const spec of def.colorSpecs) {
+		resolved[spec.key] = saved[spec.key] ?? (spec.key === id ? settings.colors[id] : undefined) ?? spec.defaultColor;
+	}
+	return resolved;
 }
 
 export function activePaneOrder(settings: IndicatorSettings): PaneId[] {
@@ -210,6 +223,7 @@ export function parseIndicatorSettings(value: unknown): IndicatorSettings {
 			enabled,
 			params: { rsi: { period: value.rsi.period as number } },
 			colors: { rsi: value.rsi.color },
+			plotColors: {},
 			paneOrder,
 			hidden: [],
 			legendCollapsed: false,
@@ -252,6 +266,22 @@ export function parseIndicatorSettings(value: unknown): IndicatorSettings {
 		colors[id] = col;
 	}
 
+	const plotColors: Record<string, Record<string, string>> = {};
+	if (value.plotColors !== undefined) {
+		if (!isRecord(value.plotColors)) throw new Error('Invalid plotColors');
+		for (const [id, rawMap] of Object.entries(value.plotColors)) {
+			const def = getCatalogIndicator(id);
+			if (!def?.colorSpecs?.length || !isRecord(rawMap)) throw new Error(`Invalid plotColors for ${id}`);
+			const validKeys = new Set(def.colorSpecs.map(spec => spec.key));
+			const clean: Record<string, string> = {};
+			for (const [key, col] of Object.entries(rawMap)) {
+				if (!validKeys.has(key) || !isHexColor(col)) throw new Error(`Invalid plotColor ${id}.${key}`);
+				clean[key] = col;
+			}
+			plotColors[id] = clean;
+		}
+	}
+
 	const paneOrder: PaneId[] = [];
 	for (const item of value.paneOrder) {
 		if (typeof item !== 'string' || !isValidPaneId(item) || paneOrder.includes(item)) {
@@ -274,6 +304,7 @@ export function parseIndicatorSettings(value: unknown): IndicatorSettings {
 		enabled,
 		params,
 		colors,
+		plotColors,
 		paneOrder,
 		hidden: hidden as string[],
 		legendCollapsed: value.legendCollapsed === true,

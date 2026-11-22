@@ -21,6 +21,19 @@ export interface IndicatorParamSpec {
 	integer?: boolean;
 }
 
+export interface HistogramPalette {
+	growUp: string;
+	fallUp: string;
+	growDown: string;
+	fallDown: string;
+}
+
+export interface IndicatorColorSpec {
+	key: string;
+	label: string;
+	defaultColor: string;
+}
+
 export interface IndicatorPlotSpec {
 	key: string;
 	label: string;
@@ -29,14 +42,26 @@ export interface IndicatorPlotSpec {
 	lineWidth?: 1 | 2 | 3 | 4;
 	lineStyle?: number;
 	lastValueVisible?: boolean;
+	histogramPalette?: HistogramPalette;
 }
 
+export const DEFAULT_HISTOGRAM_PALETTE: HistogramPalette = {
+	growUp: '#26A69A',
+	fallUp: '#B2DFDB',
+	growDown: '#FF5252',
+	fallDown: '#FFCDD2',
+};
+
 /** TradingView standard 4-color histogram palette: distinguishes above/below zero and growing/falling momentum. */
-export function histogramBarColor(value: number, previous: number | undefined): string {
+export function histogramBarColor(
+	value: number,
+	previous: number | undefined,
+	palette: HistogramPalette = DEFAULT_HISTOGRAM_PALETTE,
+): string {
 	if (value >= 0) {
-		return previous === undefined || value >= previous ? '#26A69A' : '#B2DFDB';
+		return previous === undefined || value >= previous ? palette.growUp : palette.fallUp;
 	}
-	return previous === undefined || value <= previous ? '#FF5252' : '#FFCDD2';
+	return previous === undefined || value <= previous ? palette.growDown : palette.fallDown;
 }
 
 export interface IndicatorRefLine {
@@ -63,8 +88,9 @@ export interface CatalogIndicator {
 	popular: boolean;
 	special?: 'ma' | 'ema' | 'volume';
 	defaultColor?: string;
+	colorSpecs?: readonly IndicatorColorSpec[];
 	params: readonly IndicatorParamSpec[];
-	createRunner?(params: Record<string, number>, color: string): IndicatorRunner;
+	createRunner?(params: Record<string, number>, color: string, plotColors?: Record<string, string>): IndicatorRunner;
 }
 
 const num = (params: Record<string, number>, key: string, fallback: number): number =>
@@ -151,21 +177,37 @@ export const INDICATOR_CATALOG: readonly CatalogIndicator[] = [
 	{
 		id: 'macd', shortName: 'MACD', name: '指数平滑异同移动平均线', description: '经典趋势与动量副图（DIF / DEA / 能量柱）',
 		category: '动量摆动', placement: 'pane', popular: true, defaultColor: '#4285ff',
+		colorSpecs: [
+			{ key: 'macd', label: '快线颜色 (DIF)', defaultColor: '#4285ff' },
+			{ key: 'signal', label: '慢线颜色 (DEA)', defaultColor: '#ff9e2c' },
+			{ key: 'histGrowUp', label: '能量柱 · 上涨增强', defaultColor: '#26a69a' },
+			{ key: 'histFallUp', label: '能量柱 · 上涨减弱', defaultColor: '#b2dfdb' },
+			{ key: 'histGrowDown', label: '能量柱 · 下跌增强', defaultColor: '#ff5252' },
+			{ key: 'histFallDown', label: '能量柱 · 下跌减弱', defaultColor: '#ffcdd2' },
+		],
 		params: [
 			{ key: 'fast', label: '快线周期', min: 2, max: 100, step: 1, defaultValue: 12, integer: true },
 			{ key: 'slow', label: '慢线周期', min: 3, max: 200, step: 1, defaultValue: 26, integer: true },
 			{ key: 'signal', label: '信号周期', min: 2, max: 100, step: 1, defaultValue: 9, integer: true },
 		],
-		createRunner(params, color) {
+		createRunner(params, color, plotColors) {
 			const fast = int(params, 'fast', 12, 2);
 			const slow = int(params, 'slow', 26, 3);
 			const sig = int(params, 'signal', 9, 2);
 			const ind = new MACD(new EMA(fast), new EMA(slow), new EMA(sig));
+			const macdColor = plotColors?.macd ?? color;
+			const signalColor = plotColors?.signal ?? '#ff9e2c';
+			const histogramPalette: HistogramPalette = {
+				growUp: plotColors?.histGrowUp ?? DEFAULT_HISTOGRAM_PALETTE.growUp,
+				fallUp: plotColors?.histFallUp ?? DEFAULT_HISTOGRAM_PALETTE.fallUp,
+				growDown: plotColors?.histGrowDown ?? DEFAULT_HISTOGRAM_PALETTE.growDown,
+				fallDown: plotColors?.histFallDown ?? DEFAULT_HISTOGRAM_PALETTE.fallDown,
+			};
 			return {
 				plots: [
-					{ key: 'histogram', label: '柱', kind: 'histogram', color: '#26A69A', lastValueVisible: true },
-					{ key: 'macd', label: `DIF(${fast},${slow})`, kind: 'line', color, lineWidth: 1, lastValueVisible: true },
-					{ key: 'signal', label: `DEA(${sig})`, kind: 'line', color: '#ff9e2c', lineWidth: 1, lastValueVisible: true },
+					{ key: 'histogram', label: '柱', kind: 'histogram', color: histogramPalette.growUp, lastValueVisible: true, histogramPalette },
+					{ key: 'macd', label: `DIF(${fast},${slow})`, kind: 'line', color: macdColor, lineWidth: 1, lastValueVisible: true },
+					{ key: 'signal', label: `DEA(${sig})`, kind: 'line', color: signalColor, lineWidth: 1, lastValueVisible: true },
 				],
 				update(c, replace) {
 					const r = ind.update(c.close, replace);

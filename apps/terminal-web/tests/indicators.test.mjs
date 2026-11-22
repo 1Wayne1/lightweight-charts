@@ -5,7 +5,7 @@ import {
 } from '../src/data/indicator-catalog.ts';
 import {
 	MAX_MA_LINES, activePaneOrder, calculateEmaSeries, calculateRsiSeries, calculateSmaSeries,
-	defaultIndicatorSettings, movePaneOrder, moveVisiblePane,
+	defaultIndicatorSettings, indicatorPlotColors, movePaneOrder, moveVisiblePane,
 	nextLinePreset, parseIndicatorSettings, setIndicatorEnabled, setIndicatorVisible, isIndicatorVisible,
 } from '../src/data/indicators.ts';
 
@@ -154,5 +154,44 @@ test('legend visibility preserves added indicators, pane order and legacy settin
 	assert.equal(parseIndicatorSettings(old).legendCollapsed, false);
 	for (const invalid of [{ hidden: ['unknown'] }, { hidden: ['ma', 'ma'] }, { hidden: 'ma' }, { hidden: null }, { legendCollapsed: 'false' }]) {
 		assert.throws(() => parseIndicatorSettings({ ...settings, ...invalid }));
+	}
+});
+
+test('MACD supports custom fast/slow line and 4-state histogram colors with legacy compatibility', () => {
+	const settings = defaultIndicatorSettings();
+	settings.plotColors.macd = {
+		macd: '#00bcd4',
+		signal: '#ffeb3b',
+		histGrowUp: '#00e676',
+		histFallUp: '#69f0ae',
+		histGrowDown: '#d50000',
+		histFallDown: '#ff8a80',
+	};
+	const parsed = parseIndicatorSettings(JSON.parse(JSON.stringify(settings)));
+	assert.deepEqual(parsed.plotColors, settings.plotColors);
+	const resolved = indicatorPlotColors(parsed, 'macd');
+	const runner = getCatalogIndicator('macd').createRunner({ fast: 12, slow: 26, signal: 9 }, '#4285ff', resolved);
+	assert.equal(runner.plots.find(plot => plot.key === 'macd')?.color, '#00bcd4');
+	assert.equal(runner.plots.find(plot => plot.key === 'signal')?.color, '#ffeb3b');
+	const histPalette = runner.plots.find(plot => plot.key === 'histogram')?.histogramPalette;
+	assert.equal(histogramBarColor(10, 5, histPalette), '#00e676');
+	assert.equal(histogramBarColor(5, 10, histPalette), '#69f0ae');
+	assert.equal(histogramBarColor(-10, -5, histPalette), '#d50000');
+	assert.equal(histogramBarColor(-5, -10, histPalette), '#ff8a80');
+
+	// Legacy v2 config without plotColors remains valid and falls back to colors.macd + defaults.
+	const legacy = { ...settings, colors: { macd: '#787bff' } };
+	delete legacy.plotColors;
+	const migrated = parseIndicatorSettings(legacy);
+	assert.deepEqual(migrated.plotColors, {});
+	assert.equal(indicatorPlotColors(migrated, 'macd').macd, '#787bff');
+	assert.equal(indicatorPlotColors(migrated, 'macd').signal, '#ff9e2c');
+
+	for (const bad of [
+		{ plotColors: { macd: { unknownKey: '#ffffff' } } },
+		{ plotColors: { macd: { signal: 'red' } } },
+		{ plotColors: { rsi: { value: '#ffffff' } } },
+	]) {
+		assert.throws(() => parseIndicatorSettings({ ...settings, ...bad }));
 	}
 });

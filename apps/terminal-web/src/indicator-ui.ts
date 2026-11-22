@@ -3,7 +3,7 @@ import {
 	type CatalogIndicator,
 } from './data/indicator-catalog';
 import {
-	MAX_MA_LINES, activePaneOrder, indicatorColor, indicatorParams, isIndicatorEnabled,
+	MAX_MA_LINES, activePaneOrder, indicatorColor, indicatorParams, indicatorPlotColors, isIndicatorEnabled,
 	movePaneOrder, nextLinePreset, setIndicatorEnabled,
 	type IndicatorSettings, type MovingAverageLineConfig,
 } from './data/indicators';
@@ -242,13 +242,37 @@ export function renderIndicatorPanel(
 		reset.onclick = () => {
 			delete settings.params[item.id];
 			delete settings.colors[item.id];
+			delete settings.plotColors[item.id];
 			notify();
 		};
 		header.append(toggle, reset);
 		content.append(header);
 
 		const form = element('div', 'ind-line-list');
-		if (item.defaultColor) {
+		if (item.colorSpecs?.length) {
+			const resolved = indicatorPlotColors(settings, item.id);
+			const grid = element('div', 'ind-color-grid');
+			for (const spec of item.colorSpecs) {
+				const colorRow = element('label', 'ind-line-row');
+				const color = element('input');
+				color.type = 'color';
+				color.value = resolved[spec.key] ?? spec.defaultColor;
+				color.setAttribute('aria-label', `${item.shortName} ${spec.label}`);
+				const applyPlotColor = (): void => {
+					const nextColor = color.value;
+					const existing = settings.plotColors[item.id]?.[spec.key];
+					if (existing === nextColor) return;
+					settings.plotColors[item.id] = { ...(settings.plotColors[item.id] ?? {}), [spec.key]: nextColor };
+					if (spec.key === item.id) settings.colors[item.id] = nextColor;
+					onChange();
+				};
+				color.oninput = applyPlotColor;
+				color.onchange = applyPlotColor;
+				colorRow.append(color, element('span', 'ind-period-field', spec.label));
+				grid.append(colorRow);
+			}
+			form.append(grid);
+		} else if (item.defaultColor) {
 			const colorRow = element('div', 'ind-line-row');
 			const color = element('input');
 			color.type = 'color';

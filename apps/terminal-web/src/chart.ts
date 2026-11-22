@@ -7,7 +7,7 @@ import {
 	createMaRunner, getCatalogIndicator, histogramBarColor, type IndicatorRunner,
 } from './data/indicator-catalog';
 import {
-	MAX_MA_LINES, activePaneOrder, indicatorColor, indicatorParams, isIndicatorVisible,
+	MAX_MA_LINES, activePaneOrder, indicatorColor, indicatorParams, indicatorPlotColors, isIndicatorVisible,
 	type IndicatorSettings, type PaneId,
 } from './data/indicators';
 
@@ -270,7 +270,7 @@ export function createTerminalChart(
 					const hist = entry.histogramState.get(plot.key)!;
 					hist.prevCompleted = hist.current;
 					hist.current = v;
-					buffers.get(plot.key)!.push({ time, value: v, color: histogramBarColor(v, hist.prevCompleted) });
+					buffers.get(plot.key)!.push({ time, value: v, color: histogramBarColor(v, hist.prevCompleted, plot.histogramPalette) });
 				} else {
 					buffers.get(plot.key)!.push({ time, value: v });
 				}
@@ -299,7 +299,7 @@ export function createTerminalChart(
 				}
 				if (!replace) hist.prevCompleted = hist.current;
 				hist.current = v;
-				(s as ISeriesApi<'Histogram'>).update({ time, value: v, color: histogramBarColor(v, hist.prevCompleted) });
+				(s as ISeriesApi<'Histogram'>).update({ time, value: v, color: histogramBarColor(v, hist.prevCompleted, plot.histogramPalette) });
 			} else {
 				(s as ISeriesApi<'Line'>).update({ time, value: v });
 			}
@@ -359,13 +359,13 @@ export function createTerminalChart(
 		for (const [id, entry] of overlays) {
 			const def = getCatalogIndicator(id);
 			if (!def?.createRunner) continue;
-			entry.runner = def.createRunner(indicatorParams(currentSettings, id), indicatorColor(currentSettings, id));
+			entry.runner = def.createRunner(indicatorParams(currentSettings, id), indicatorColor(currentSettings, id), indicatorPlotColors(currentSettings, id));
 			feedMounted(entry);
 		}
 		for (const [id, entry] of subPanes) {
 			const def = getCatalogIndicator(id);
 			if (!def?.createRunner) continue;
-			entry.runner = def.createRunner(indicatorParams(currentSettings, id), indicatorColor(currentSettings, id));
+			entry.runner = def.createRunner(indicatorParams(currentSettings, id), indicatorColor(currentSettings, id), indicatorPlotColors(currentSettings, id));
 			feedMounted(entry);
 		}
 	}
@@ -395,13 +395,14 @@ export function createTerminalChart(
 			const def = getCatalogIndicator(id)!;
 			const params = indicatorParams(currentSettings, id);
 			const color = indicatorColor(currentSettings, id);
-			const signature = JSON.stringify({ params, color });
+			const plotColors = indicatorPlotColors(currentSettings, id);
+			const signature = JSON.stringify({ params, color, plotColors });
 			const existing = overlays.get(id);
 			if (existing && existing.signature === signature) continue;
 			if (existing) {
 				for (const s of existing.series.values()) chart.removeSeries(s);
 			}
-			const runner = def.createRunner!(params, color);
+			const runner = def.createRunner!(params, color, plotColors);
 			const series = buildPlotSeries(pricePane, runner, false);
 			const entry: MountedIndicator = { signature, runner, series, histogramState: new Map() };
 			overlays.set(id, entry);
@@ -424,7 +425,8 @@ export function createTerminalChart(
 			const def = getCatalogIndicator(id)!;
 			const params = indicatorParams(currentSettings, id);
 			const color = indicatorColor(currentSettings, id);
-			const signature = JSON.stringify({ params, color });
+			const plotColors = indicatorPlotColors(currentSettings, id);
+			const signature = JSON.stringify({ params, color, plotColors });
 			const existing = subPanes.get(id);
 			if (existing && existing.signature === signature) continue;
 			const pane = existing?.pane ?? chart.addPane();
@@ -433,7 +435,7 @@ export function createTerminalChart(
 			if (existing) {
 				for (const s of existing.series.values()) chart.removeSeries(s);
 			}
-			const runner = def.createRunner!(params, color);
+			const runner = def.createRunner!(params, color, plotColors);
 			const series = buildPlotSeries(pane, runner, true);
 			pane.priceScale('right').applyOptions({ scaleMargins: { top: 0.14, bottom: 0.12 } });
 			pane.setPreserveEmptyPane(false);

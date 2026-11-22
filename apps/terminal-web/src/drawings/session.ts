@@ -29,14 +29,14 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 		if (!pending) return;
 		try {
 			if (!repository || loadError) throw new Error(loadError || '本机存储不可用');
-			repository.save(store); pending = false; recovery.delete(key); report('画线已自动保存到本机');
+			repository.save(store); pending = false; recovery.delete(key); report('');
 		} catch (error) { recovery.set(key, store); report(`画线未保存：${error instanceof Error ? error.message : '存储失败'}`, true); }
 	};
 	const unsubscribe = manager.subscribeStateChange(() => {
 		if (!loaded || loading || !scale) return;
 		const next = reconcileDrawings(store, manager.exportState().drawings, scale);
 		if (JSON.stringify(next) === JSON.stringify(store)) return;
-		store = next; pending = true; recovery.set(key, store); report('正在保存画线…');
+		store = next; pending = true; recovery.set(key, store);
 		clearTimeout(timer); timer = setTimeout(save, 300);
 	});
 	const reproject = (point: AnchorPoint): AnchorPoint => typeof point.time === 'number' && scale ? scale.project({ time: point.time, price: point.price }) : point;
@@ -65,10 +65,9 @@ export function createDrawingSession(chart: TerminalChart, key: string, interval
 			if (!loaded) {
 				loading = true; manager.importState(restoreDrawings(store, scale), false); loading = false; loaded = true;
 				onReady?.();
-				const activeCount = store.documents.filter(d => !d.deleted).length;
 				if (loadError) report(`画线读取失败，原数据已保留：${loadError}`, true);
 				else if (recovery.has(key)) { pending = true; save(); }
-				else report(activeCount > 0 ? '画线自动保存 · 本机' : '');
+				else report('');
 			} else manager.reprojectAnchors(reproject);
 		},
 		update(candle: Candle) {
