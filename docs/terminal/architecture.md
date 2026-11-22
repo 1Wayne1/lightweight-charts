@@ -4,7 +4,7 @@
 
 沿用 pnpm workspace，在已有图表库仓库内增加应用层。首个 Web 骨架使用 Vite + 严格 TypeScript，暂不引入 UI 框架；交互复杂度增加时可在应用层引入 React 等框架，领域包不随框架变化。Tauri 2 是 macOS、Windows、iOS 的统一原生封装方向，目前未初始化原生工程。
 
-后端选择 Node.js + PostgreSQL，以 Docker Compose 自托管。当前服务只有健康检查和能力声明；数据库驱动、鉴权及同步接口将在后续里程碑接入。行情和用户同步数据分离，数据库默认只存配置、画线和必要的同步元数据，不存全部市场 K 线。
+后端选择 Node.js + SQLite（Node 24 内置 `node:sqlite`，开启 WAL 模式），以单容器 Docker Compose 自托管：同一个容器同时托管构建后的前端静态页面、同步 API 和持久化在宿主机目录的单个 `terminal.db`。面向个人单用户自托管，使用单人访问口令（`SYNC_TOKEN` + Bearer Token 常量时间校验）保护同步与备份接口，不维护多用户注册体系。行情和用户同步数据分离，数据库只存交易对周期、画线（含墓碑）、指标/常用周期/画线默认样式等偏好以及同步幂等元数据，不存全部市场 K 线。
 
 ## 手机界面与交互
 
@@ -46,30 +46,32 @@ V1 每个工作区对同一交易对只保留一个标签页，重复打开时�
 
 现有插件锚点包含 `logical`，未来空白区锚点可能没有 `time`。**不能把插件原始 JSON 直接当作跨设备协议**：逻辑索引会随着历史范围、周期和数据补齐变化。适配器需转换为 UTC 时间 + 价格；无时间锚点根据原始数据边界与周期换算目标时间，跨周期恢复时重新投影到新数据的逻辑位置。必须测试未来锚点、非整根 K 线锚点和历史补齐，避免画线漂移。
 
-## 云同步协议（待实现）
+## 云同步协议与单文件迁移
 
-计划使用 HTTPS REST，先实现正确的拉取/推送与冲突处理，再增加 SSE 或 WebSocket 变更通知。通知只能触发增量拉取，不承担唯一的数据交付渠道。
+当前已实现基于 HTTPS/HTTP REST 的单人自托管同步与本机离线优先（Local-First）引擎：
 
-1. 用户在客户端配置自托管服务地址并登录；服务从认证信息得到 `userId`，不能信任请求体里的账户 ID。
-2. 本机先落盘修改，并将 `mutationId`、`deviceId`、`baseRevision` 和数据写入持久化待发送队列。正式离线状态使用 IndexedDB/原生存储适配器；初始化的 localStorage 只是单设备演示。
-3. 服务在事务内核对账户与版本，以乐观并发检查写入，递增 revision，并记录 mutationId 和响应，保证重复发送不产生重复修改。
-4. 陈旧 baseRevision 返回 HTTP 409 和最新版本；客户端保留未提交修改，让用户选择或按字段合并。禁止根据客户端时间戳静默整份覆盖。
-5. 拉取时包含删除墓碑。首版可使用按用户完整快照；引入增量同步前增加事务性变更日志和不漏事件的游标协议，不能用普通时间戳或未按提交顺序维护的自增 ID 直接充当可靠游标。
-6. 网络恢复或应用回到前台时先拉取并协调冲突，再重试待发送项。服务确认后才显示“已同步”；断网、等待同步、冲突和失败要区分。
+1. 客户端在「云同步与数据迁移」弹窗配置自托管服务地址（单容器同源部署可留空自动使用当前来源）和 `SYNC_TOKEN`；令牌仅保存在本机浏览器存储中，不写日志、不提交仓库、不打入前端构建产物。
+2. 本机修改始终先落盘，再写入持久化在 IndexedDB（隐私模式下自动回退 `localStorage`）的待同步队列 `outbox`，附带 `mutationId`、`deviceId`、`baseRevision`；仅在服务端确认后才显示“已同步”。服务器临时关机时客户端自动进入离线模式，继续使用本机数据并在服务端恢复后自动补推。
+3. 服务端在 SQLite `BEGIN IMMEDIATE` 事务内核对 `mutationId` 幂等记录与 `baseRevision` 乐观并发版本：写入成功则递增 `revision` 并在同一事务中持久化 `sync_mutations` 响应；陈旧 `baseRevision` 返回 HTTP 409 与服务端最新版本，客户端保留冲突项由用户逐项选择“保留本机”或“采用服务端”，禁止按客户端时间戳静默整份覆盖。
+4. 每个 SQLite 数据库在首次初始化时生成稳定的 `store_id` 写入 `store_meta`。将 `terminal.db` 通过在线热备（`VACUUM INTO`）迁移到电脑运行时 `store_id` 保持一致，同步无缝衔接；若切换到全新空库或旧库，客户端检测到 `store_id` 变化会停止自动覆盖，弹窗由用户明确选择“合并两端 / 以本机覆盖服务端 / 以服务端覆盖本机”。
+5. 即使服务端完全离线，客户端仍支持离线导出/导入带 `schemaVersion` 校验的完整 JSON 快照（覆盖交易对周期、画线与墓碑、指标、常用周期及画线默认样式）。
 
-一期建议的接口职责如下，当前除能力接口外均未实现：
+当前已实现的接口职责如下（除健康检查和能力声明外均需 `Authorization: Bearer <SYNC_TOKEN>`）：
 
 | 接口 | 职责 |
 | --- | --- |
-| `GET /v1/capabilities` | 声明 API 版本和真实可用能力，当前全部业务能力为 false |
-| `GET /v1/instruments` | 读取当前用户的交易对偏好和画线快照，包含墓碑 |
-| `PUT /v1/instruments/:key/preferences` | 带 mutationId / baseRevision 的周期更新 |
+| `GET /health/live` | 进程存活检查 |
+| `GET /health/ready` | SQLite 数据库连接就绪检查 |
+| `GET /v1/capabilities` | 声明 API 版本、存储类型、当前 `storeId` 与静态托管能力（公开，不返回用户数据或令牌） |
+| `GET /v1/snapshot`（别名 `/v1/instruments`） | 读取全部交易对偏好、画线（含删除墓碑）与共享设置快照 |
+| `PUT /v1/instruments/:key/preferences` | 带 `mutationId` / `baseRevision` 的交易对周期更新 |
 | `PUT /v1/instruments/:key/drawings/:id` | 单条画线的新增、修改或墓碑写入 |
-
-登录/刷新令牌接口需随账户方案单独确定；令牌在原生端使用 Keychain/系统安全存储，在 Web 端优先使用安全的 HttpOnly 会话 cookie 并落实 CSRF 防护。设备时间不用于裁决版本，服务端统一写入更新时间。
+| `PUT /v1/settings/:key` | 共享设置更新（`indicators` / `timeframes` / `drawing-defaults` / `watchlist` / `workspace-tabs`） |
+| `GET /v1/backup/sqlite` | 通过 `VACUUM INTO` 生成并返回单个一致的 `.db` 热备份文件 |
+| `POST /v1/import` | 导入 JSON 快照（`merge` 合并或 `replace` 替换） |
 
 ## 部署与兼容
 
-Docker Compose 提供 API 容器、PostgreSQL 命名卷和初始迁移。当前仅有进程存活检查，尚无数据库就绪检查。正式部署前补齐 HTTPS、账户鉴权、请求校验、用户隔离、备份恢复、迁移版本管理和旧客户端协议兼容。
+Docker Compose 提供单容器服务（前端静态资源 + 同步 API + SQLite）、宿主机数据目录挂载与版本化迁移执行器（记录于 `schema_migrations`，不通过删库升级）。公网部署建议在容器外层配合 Caddy / Nginx 等反向代理提供 HTTPS，并将容器端口默认绑定至 `127.0.0.1`。
 
 保留图表库 LICENSE、NOTICE 和用户可见的 TradingView 归属链接。应用是基于 Lightweight Charts 的独立看盘工具，不依赖 TradingView 商业 Charting Library，也不把自己标记为 TradingView 官方客户端。

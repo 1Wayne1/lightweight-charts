@@ -26,6 +26,16 @@ export function instrumentKey(instrument: Instrument): string {
 	return `${instrument.venue}:${instrument.market}:${instrument.symbol}`;
 }
 
+export function parseInstrumentKey(key: string): Instrument {
+	const parts = key.split(':');
+	if (parts.length !== 3) throw new Error('Invalid instrument key');
+	const [venue, market, symbol] = parts;
+	if (market !== 'spot' && market !== 'perpetual') throw new Error('Invalid instrument market');
+	const instrument: Instrument = { venue, market, symbol };
+	if (instrumentKey(instrument) !== key) throw new Error('Invalid instrument key');
+	return instrument;
+}
+
 export interface InstrumentPreferences {
 	instrument: Instrument;
 	timeframe: Timeframe;
@@ -55,13 +65,99 @@ export interface DrawingDocument {
 	deleted: boolean;
 }
 
-/** Planned optimistic concurrency envelope; revision is assigned by the server. */
+/** Optimistic concurrency envelope; revision is assigned by the server. */
 export interface SyncMutation<T> {
 	mutationId: string;
 	deviceId: string;
 	baseRevision: number;
 	value: T;
 }
+
+export const SYNC_SETTING_KEYS = ['indicators', 'timeframes', 'drawing-defaults', 'watchlist', 'workspace-tabs', 'custom-colors'] as const;
+export type SyncSettingKey = typeof SYNC_SETTING_KEYS[number];
+
+export interface WorkspaceTabsSnapshot {
+	schemaVersion: 1;
+	tabs: ChartTab[];
+	activeTabId: string | null;
+}
+
+export interface SyncedInstrumentState {
+	instrumentKey: string;
+	instrument: Instrument;
+	timeframe: Timeframe;
+	revision: number;
+	updatedAt: string;
+}
+
+export interface SyncedDrawingRecord extends DrawingDocument {
+	updatedAt: string;
+}
+
+export interface SyncedSettingRecord {
+	key: SyncSettingKey;
+	value: Record<string, unknown>;
+	revision: number;
+	updatedAt: string;
+}
+
+export interface SyncSnapshot {
+	schemaVersion: 1;
+	storeId: string;
+	exportedAt: string;
+	instruments: SyncedInstrumentState[];
+	drawings: SyncedDrawingRecord[];
+	settings: Record<string, SyncedSettingRecord>;
+}
+
+export interface SyncCapabilities {
+	apiVersion: 1;
+	mode: 'single-user';
+	storage: 'sqlite';
+	storeId: string;
+	authentication: 'token';
+	sync: boolean;
+	backup: boolean;
+	staticWeb: boolean;
+}
+
+export type PendingSyncMutation =
+	| {
+		mutationId: string;
+		kind: 'preference';
+		instrumentKey: string;
+		baseRevision: number;
+		timeframe: Timeframe;
+		queuedAt: number;
+	}
+	| {
+		mutationId: string;
+		kind: 'drawing';
+		instrumentKey: string;
+		drawingId: string;
+		baseRevision: number;
+		document: DrawingDocument;
+		queuedAt: number;
+	}
+	| {
+		mutationId: string;
+		kind: 'setting';
+		key: SyncSettingKey;
+		baseRevision: number;
+		value: Record<string, unknown>;
+		queuedAt: number;
+	};
+
+export type SyncStatusState =
+	| 'disabled'
+	| 'syncing'
+	| 'synced'
+	| 'offline'
+	| 'pending'
+	| 'conflict'
+	| 'auth_error'
+	| 'store_mismatch'
+	| 'error';
 
 export interface Candle {
 	time: number;
@@ -185,4 +281,116 @@ export function parseWorkspace(value: unknown): Workspace {
 		throw new Error('Invalid active tab');
 	}
 	return { schemaVersion: 1, tabs, activeTabId: value.activeTabId as string | null, preferences };
+}
+
+/** Validate synced open tabs & active tab layout independently of instrument preferences. */
+export function parseWorkspaceTabsSnapshot(value: unknown): WorkspaceTabsSnapshot {
+	if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.tabs) || value.tabs.length > 100) {
+		throw new Error('Invalid workspace tabs snapshot');
+	}
+	const ids = new Set<string>();
+	const keys = new Set<string>();
+	const tabs = value.tabs.map((tab: unknown): ChartTab => {
+		if (!isRecord(tab) || typeof tab.id !== 'string' || !tab.id ||
+			typeof tab.instrumentKey !== 'string' || ids.has(tab.id) || keys.has(tab.instrumentKey)) {
+			throw new Error('Invalid or duplicate synced tab');
+		}
+		parseInstrumentKey(tab.instrumentKey);
+		ids.add(tab.id);
+		keys.add(tab.instrumentKey);
+		return { id: tab.id, instrumentKey: tab.instrumentKey };
+	});
+	if ((tabs.length === 0 && value.activeTabId !== null) ||
+		(tabs.length > 0 && (typeof value.activeTabId !== 'string' || !ids.has(value.activeTabId)))) {
+		throw new Error('Invalid synced active tab');
+	}
+	return { schemaVersion: 1, tabs, activeTabId: value.activeTabId as string | null };
+}
+
+/** Validate a portable or server sync snapshot at runtime. */
+export function parseSyncSnapshot(value: unknown): SyncSnapshot {
+	if (!isRecord(value) || value.schemaVersion !== 1 ||
+		typeof value.storeId !== 'string' || !/^[\w-]{1,128}$/.test(value.storeId) ||
+		typeof value.exportedAt !== 'string' || !value.exportedAt ||
+		!Array.isArray(value.instruments) || !Array.isArray(value.drawings)) {
+		throw new Error('Invalid sync snapshot or unsupported schema');
+	}
+	const instrumentKeys = new Set<string>();
+	const instruments: SyncedInstrumentState[] = value.instruments.map((entry: unknown): SyncedInstrumentState => {
+		if (!isRecord(entry) || typeof entry.instrumentKey !== 'string' ||
+			!TIMEFRAMES.some(tf => tf === entry.timeframe) ||
+			!Number.isSafeInteger(entry.revision) || Number(entry.revision) < 0 ||
+			typeof entry.updatedAt !== 'string' || !entry.updatedAt) {
+			throw new Error('Invalid synced instrument state');
+		}
+		const instrument = parseInstrumentKey(entry.instrumentKey);
+		if (instrumentKeys.has(entry.instrumentKey)) throw new Error('Duplicate instrument in snapshot');
+		instrumentKeys.add(entry.instrumentKey);
+		return {
+			instrumentKey: entry.instrumentKey,
+			instrument,
+			timeframe: entry.timeframe as Timeframe,
+			revision: Number(entry.revision),
+			updatedAt: entry.updatedAt,
+		};
+	});
+	const drawingIds = new Set<string>();
+	const drawings: SyncedDrawingRecord[] = value.drawings.map((entry: unknown): SyncedDrawingRecord => {
+		if (!isRecord(entry) || entry.schemaVersion !== 1 ||
+			typeof entry.id !== 'string' || !/^[\w-]{1,128}$/.test(entry.id) || drawingIds.has(entry.id) ||
+			typeof entry.instrumentKey !== 'string' ||
+			typeof entry.kind !== 'string' || !entry.kind ||
+			!Array.isArray(entry.anchors) || entry.anchors.length > 2000 ||
+			!isRecord(entry.style) ||
+			!Number.isSafeInteger(entry.revision) || Number(entry.revision) < 0 ||
+			typeof entry.deleted !== 'boolean' ||
+			typeof entry.updatedAt !== 'string' || !entry.updatedAt) {
+			throw new Error('Invalid synced drawing record');
+		}
+		parseInstrumentKey(entry.instrumentKey);
+		drawingIds.add(entry.id);
+		const anchors = entry.anchors.map((anchor: unknown) => {
+			if (!isRecord(anchor) || typeof anchor.time !== 'number' || !Number.isFinite(anchor.time) ||
+				typeof anchor.price !== 'number' || !Number.isFinite(anchor.price)) {
+				throw new Error('Invalid drawing anchor');
+			}
+			return { time: anchor.time, price: anchor.price };
+		});
+		return {
+			schemaVersion: 1,
+			id: entry.id,
+			instrumentKey: entry.instrumentKey,
+			kind: entry.kind,
+			anchors,
+			style: structuredClone(entry.style),
+			revision: Number(entry.revision),
+			deleted: entry.deleted,
+			updatedAt: entry.updatedAt,
+		};
+	});
+	const settings: Record<string, SyncedSettingRecord> = {};
+	const rawSettings = value.settings === undefined ? {} : value.settings;
+	if (!isRecord(rawSettings)) throw new Error('Invalid synced settings');
+	for (const [key, entry] of Object.entries(rawSettings)) {
+		if (!SYNC_SETTING_KEYS.some(allowed => allowed === key)) throw new Error(`Unsupported setting key: ${key}`);
+		if (!isRecord(entry) || !isRecord(entry.value) ||
+			!Number.isSafeInteger(entry.revision) || Number(entry.revision) < 0 ||
+			typeof entry.updatedAt !== 'string' || !entry.updatedAt) {
+			throw new Error('Invalid synced setting entry');
+		}
+		settings[key] = {
+			key: key as SyncSettingKey,
+			value: structuredClone(entry.value),
+			revision: Number(entry.revision),
+			updatedAt: entry.updatedAt,
+		};
+	}
+	return {
+		schemaVersion: 1,
+		storeId: value.storeId,
+		exportedAt: value.exportedAt,
+		instruments,
+		drawings,
+		settings,
+	};
 }

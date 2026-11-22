@@ -59,7 +59,11 @@ tests/fixtures/**/dist/
 /apps/*/dist/
 /apps/*/src-tauri/target/
 /apps/*/src-tauri/gen/
+/deploy/terminal/data/
 .env
 .env.*
 !.env.example
 *.dump
+*.db
+*.db-wal
+*.db-shm
