@@ -62,14 +62,21 @@ export function parseQuote(value: unknown, streaming = false): MarketQuote {
 	if (result.price <= 0 || result.low <= 0 || result.high < result.low) throw new Error('报价数据无效');
 	return result;
 }
+const PERPETUAL_CONTRACT_TYPES = new Set(['PERPETUAL', 'TRADIFI_PERPETUAL']);
+
 export function parseExchangeInfo(value: unknown, market: Market): InstrumentInfo[] {
 	const info = record(value);
 	if (!Array.isArray(info.symbols)) throw new Error('交易对目录无效');
 	const result: InstrumentInfo[] = [];
 	for (const value of info.symbols as unknown[]) {
 		const item = record(value);
-		if (item.status !== 'TRADING' || item.quoteAsset !== 'USDT' || (market === 'perpetual' && item.contractType !== 'PERPETUAL') || (market === 'spot' && item.isSpotTradingAllowed === false)) continue;
-		if (typeof item.baseAsset !== 'string' || !/^[A-Z0-9]+$/.test(item.baseAsset) || !Array.isArray(item.filters)) continue;
+		if (
+			item.status !== 'TRADING' ||
+			item.quoteAsset !== 'USDT' ||
+			(market === 'perpetual' && (typeof item.contractType !== 'string' || !PERPETUAL_CONTRACT_TYPES.has(item.contractType))) ||
+			(market === 'spot' && item.isSpotTradingAllowed === false)
+		) continue;
+		if (typeof item.baseAsset !== 'string' || !/^[A-Z0-9]+$/.test(item.baseAsset) || item.symbol !== `${item.baseAsset}USDT` || !Array.isArray(item.filters)) continue;
 		const filter = (item.filters as unknown[]).map(record).find(f => f.filterType === 'PRICE_FILTER');
 		const tickSize = filter ? numeric(filter.tickSize) : 0;
 		if (tickSize <= 0) continue;

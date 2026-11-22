@@ -1,4 +1,4 @@
-import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseWorkspace, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type Timeframe, type Workspace } from '@terminal/domain';
+import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseInstrumentKey, parseWorkspace, parseWorkspaceTabsSnapshot, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type SyncSnapshot, type SyncedDrawingRecord, type SyncedInstrumentState, type SyncedSettingRecord, type Timeframe, type Workspace } from '@terminal/domain';
 import { CrosshairMode } from 'lightweight-charts';
 import { createTerminalChart, type ChartLayout, type IndicatorSettings, type TerminalChart } from './chart';
 import { attachChartPinch, installViewportZoomGuard } from './chart-pinch';
@@ -7,20 +7,28 @@ import {
 	INDICATOR_STORAGE_KEY, activePaneOrder, defaultIndicatorSettings, isIndicatorEnabled, isIndicatorVisible, setIndicatorVisible,
 	moveVisiblePane, parseIndicatorSettings, setIndicatorEnabled, type PaneId,
 } from './data/indicators';
-import { MOBILE_TIMEFRAME_STORAGE_KEY, TIMEFRAME_LONG_LABELS, parseMobileTimeframe, resolveActiveTimeframe, serializeMobileTimeframe } from './data/timeframes';
-import { renderIndicatorPanel } from './indicator-ui';
+import { MOBILE_TIMEFRAME_STORAGE_KEY, TIMEFRAME_LONG_LABELS, parseMobileTimeframe, parseTimeframePreferences, resolveActiveTimeframe, serializeMobileTimeframe } from './data/timeframes';
+import { WATCHLIST_STORAGE_KEY, hasInWatchlist, moveWatchlistItemToEdge, parseWatchlistStore, removeFromWatchlist, reorderWatchlist, toggleWatchlistItem } from './data/watchlist';
+import { closeIndicatorColorPopover, renderIndicatorPanel } from './indicator-ui';
 import { indicatorLegendRow, updateIndicatorLegendValues } from './indicator-legend';
 import { createTimeframeUI } from './timeframe-ui';
-import { catalogue, coinBadge, formatPrice, instruments, marketFor, marketLabel, priceTick, registerInstruments, symbolLabel } from './markets';
+import { catalogue, coinBadge, defaultInstruments, formatPrice, instruments, marketFor, marketLabel, priceTick, registerInstruments, setWatchlistInstruments, symbolLabel } from './markets';
 import { BinanceProvider, defaultEndpoints } from './data/binance';
 import { startCandleFeed } from './data/candle-feed';
 import { startQuoteFeed } from './data/quote-feed';
 import { migrateDemoWorkspace } from './data/workspace-migration';
 import { createMobileUI } from './mobile';
 import { element, icon, iconButton, unavailableButton } from './ui';
-import { createDrawingSession, type DrawingSession } from './drawings/session';
+import { createDrawingSession, exportSharedStyleDefaults, reloadSharedStyleDefaults, type DrawingSession } from './drawings/session';
 import { createPriceAxisShortcut } from './drawings/price-axis-shortcut';
+import { drawingStorageKey, parseDrawingStore, type DrawingStore } from './drawings/storage';
+import { DRAWING_DEFAULTS_STORAGE_KEY, parseDrawingStyleDefaultsStore } from './drawings/style-defaults';
+import { CUSTOM_COLORS_STORAGE_KEY, parseCustomColorsStore } from './drawings/color-palette';
+import { exportSharedCustomColors, reloadSharedCustomColors, setCustomColorsChangeListener } from './drawings/color-picker';
 import { createDrawingUI } from './drawings/ui';
+import { SyncEngine } from './sync/engine';
+import { IndexedDbSyncStorage } from './sync/storage';
+import { createSyncDialog } from './sync/ui';
 import './style.css';
 import './mobile.css';
 import './indicator-legend.css';
@@ -30,13 +38,22 @@ const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing application root');
 app.replaceChildren();
 
+try {
+	const rawWatchlist = localStorage.getItem(WATCHLIST_STORAGE_KEY);
+	if (rawWatchlist) {
+		setWatchlistInstruments(parseWatchlistStore(JSON.parse(rawWatchlist)).items);
+	}
+} catch {
+	setWatchlistInstruments(defaultInstruments);
+}
+
 let storageNotice = '设置保存在本机';
 let state: Workspace;
 try {
 	const stored = localStorage.getItem(STORAGE_KEY);
-	state = stored ? migrateDemoWorkspace(parseWorkspace(JSON.parse(stored))) : openInstrument(openInstrument(emptyWorkspace(), instruments[0]), instruments[1]);
+	state = stored ? migrateDemoWorkspace(parseWorkspace(JSON.parse(stored))) : openInstrument(openInstrument(emptyWorkspace(), defaultInstruments[0]), defaultInstruments[1]);
 } catch {
-	state = openInstrument(emptyWorkspace(), instruments[0]);
+	state = openInstrument(emptyWorkspace(), defaultInstruments[0]);
 	storageNotice = '本机记录不可用，当前为临时工作区';
 }
 let chart: TerminalChart | undefined;
@@ -93,8 +110,7 @@ const tabs = element('nav', 'tabs');
 tabs.setAttribute('aria-label', '交易对标签页');
 const addTab = iconButton('plus', '打开交易对', () => openPicker());
 addTab.classList.add('add-tab');
-const appName = element('span', 'app-name', 'CRYPTO TERMINAL');
-tabstrip.append(brand, tabs, addTab, appName);
+tabstrip.append(brand, tabs, addTab);
 
 const toolbar = element('div', 'toolbar');
 const symbolButton = element('button', 'symbol-button');
@@ -103,7 +119,12 @@ symbolButton.title = '搜索交易对';
 const periods = element('div', 'periods');
 periods.setAttribute('aria-label', '图表周期');
 const timeframeUI = createTimeframeUI(app, periods, timeframe => {
-	if (state.activeTabId) commit(setTimeframe(state, state.activeTabId, timeframe));
+	if (!state.activeTabId) return;
+	const activeTab = state.tabs.find(tab => tab.id === state.activeTabId);
+	commit(setTimeframe(state, state.activeTabId, timeframe));
+	if (activeTab) void syncEngine.enqueuePreference(activeTab.instrumentKey, timeframe);
+}, prefs => {
+	void syncEngine.enqueueSetting('timeframes', prefs as unknown as Record<string, unknown>);
 });
 const separator = (): HTMLSpanElement => element('span', 'separator');
 const chartType = iconButton('candles', '蜡烛图');
@@ -176,7 +197,20 @@ watchlist.setAttribute('aria-label', '自选列表');
 const watchHeading = element('div', 'watch-heading');
 const watchTitle = element('h2');
 watchTitle.append(element('span', 'flag'), document.createTextNode('自选列表'));
-watchHeading.append(watchTitle, element('span', 'spacer'), iconButton('plus', '添加交易对', () => openPicker()));
+let watchEditMode = false;
+const watchEditButton = element('button', 'watch-edit-toggle', '管理');
+watchEditButton.type = 'button';
+watchEditButton.setAttribute('aria-pressed', 'false');
+watchEditButton.title = '批量排序或移除自选交易对';
+watchEditButton.onclick = () => {
+	watchEditMode = !watchEditMode;
+	watchEditButton.textContent = watchEditMode ? '完成' : '管理';
+	watchEditButton.setAttribute('aria-pressed', String(watchEditMode));
+	watchlist.classList.toggle('is-editing', watchEditMode);
+	closeWatchContextMenu();
+	renderWatchRows();
+};
+watchHeading.append(watchTitle, element('span', 'spacer'), watchEditButton, iconButton('plus', '添加交易对', () => openPicker()));
 const closeWatchlist = iconButton('close', '关闭自选列表', () => toggleWatchlist(false));
 closeWatchlist.classList.add('close-watchlist');
 watchHeading.append(closeWatchlist);
@@ -189,31 +223,171 @@ const tableBody = element('tbody');
 table.append(tableHead, tableBody);
 const quoteRows = new Map<string, { row: HTMLTableRowElement; price: HTMLTableCellElement; change: HTMLTableCellElement }>();
 const quotes = new Map<string, MarketQuote>();
+let watchDragFromIndex: number | null = null;
+let watchDropTarget: { row: HTMLTableRowElement; position: 'before' | 'after' } | null = null;
+let watchContextMenu: HTMLDivElement | undefined;
+
+function clearWatchDragIndicator(): void {
+	if (watchDropTarget) {
+		watchDropTarget.row.classList.remove('drop-before', 'drop-after');
+		watchDropTarget = null;
+	}
+}
+
+function closeWatchContextMenu(): void {
+	watchContextMenu?.remove();
+	watchContextMenu = undefined;
+}
+
+function openWatchContextMenu(instrument: Instrument, index: number, clientX: number, clientY: number): void {
+	closeWatchContextMenu();
+	const menu = element('div', 'watch-context-menu');
+	menu.setAttribute('role', 'menu');
+	menu.setAttribute('aria-label', `${symbolLabel(instrument)} 操作`);
+	const addItem = (label: string, action: () => void, opts?: { disabled?: boolean; danger?: boolean; iconName?: 'arrowUp' | 'arrowDown' | 'trash' }) => {
+		const btn = element('button', `watch-context-item${opts?.danger ? ' danger' : ''}`);
+		btn.type = 'button';
+		btn.setAttribute('role', 'menuitem');
+		btn.disabled = Boolean(opts?.disabled);
+		if (opts?.iconName) btn.append(icon(opts.iconName));
+		btn.append(element('span', '', label));
+		btn.onclick = () => {
+			closeWatchContextMenu();
+			action();
+		};
+		menu.append(btn);
+	};
+	addItem('移至顶部', () => saveWatchlist(moveWatchlistItemToEdge(instruments, instrument, 'top')), { disabled: index === 0, iconName: 'arrowUp' });
+	addItem('移至底部', () => saveWatchlist(moveWatchlistItemToEdge(instruments, instrument, 'bottom')), { disabled: index === instruments.length - 1, iconName: 'arrowDown' });
+	menu.append(element('div', 'watch-context-divider'));
+	addItem(`从自选移除 ${symbolLabel(instrument)}`, () => saveWatchlist(removeFromWatchlist(instruments, instrument)), { danger: true, iconName: 'trash' });
+	app?.append(menu);
+	const rect = menu.getBoundingClientRect();
+	const left = Math.max(8, Math.min(clientX, window.innerWidth - rect.width - 8));
+	const top = Math.max(8, Math.min(clientY, window.innerHeight - rect.height - 8));
+	menu.style.left = `${left}px`;
+	menu.style.top = `${top}px`;
+	watchContextMenu = menu;
+}
+
 function renderWatchRows(): void {
+	closeWatchContextMenu();
+	clearWatchDragIndicator();
 	tableBody.replaceChildren();
 	quoteRows.clear();
-	for (const instrument of instruments) {
+	const active = state.tabs.find(tab => tab.id === state.activeTabId);
+	if (instruments.length === 0) {
+		const row = element('tr', 'watch-empty-row');
+		const cell = element('td', 'watch-empty', '自选列表为空，点击上方 ＋ 添加交易对');
+		cell.colSpan = 3;
+		row.append(cell);
+		tableBody.append(row);
+		return;
+	}
+	instruments.forEach((instrument, index) => {
 		const key = instrumentKey(instrument);
 		const row = element('tr');
+		row.draggable = true;
+		row.dataset.index = String(index);
+		row.classList.toggle('selected', key === active?.instrumentKey);
+		row.ondragstart = event => {
+			closeWatchContextMenu();
+			watchDragFromIndex = index;
+			row.classList.add('is-dragging');
+			if (event.dataTransfer) {
+				event.dataTransfer.effectAllowed = 'move';
+				event.dataTransfer.setData('text/plain', key);
+			}
+		};
+		row.ondragover = event => {
+			if (watchDragFromIndex === null) return;
+			event.preventDefault();
+			if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+			const rect = row.getBoundingClientRect();
+			const position: 'before' | 'after' = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+			if (watchDropTarget?.row !== row || watchDropTarget.position !== position) {
+				clearWatchDragIndicator();
+				row.classList.add(position === 'before' ? 'drop-before' : 'drop-after');
+				watchDropTarget = { row, position };
+			}
+		};
+		row.ondrop = event => {
+			if (watchDragFromIndex === null) return;
+			event.preventDefault();
+			const from = watchDragFromIndex;
+			const rect = row.getBoundingClientRect();
+			const dropAfter = event.clientY >= rect.top + rect.height / 2;
+			let target = dropAfter ? index + 1 : index;
+			if (from < target) target -= 1;
+			watchDragFromIndex = null;
+			clearWatchDragIndicator();
+			if (from !== target) saveWatchlist(reorderWatchlist(instruments, from, target));
+		};
+		row.ondragend = () => {
+			watchDragFromIndex = null;
+			row.classList.remove('is-dragging');
+			clearWatchDragIndicator();
+		};
+		row.oncontextmenu = event => {
+			event.preventDefault();
+			openWatchContextMenu(instrument, index, event.clientX, event.clientY);
+		};
+
 		const symbolCell = element('td');
 		const open = element('button', 'watch-symbol');
+		open.type = 'button';
+		open.title = `${symbolLabel(instrument)} · 可上下拖动排序，右键移除`;
 		open.setAttribute('aria-label', `打开 ${instrument.symbol} ${marketLabel(instrument)}`);
-		open.append(coinBadge(instrument), element('span', '', symbolLabel(instrument)));
+		const grip = element('span', 'watch-drag-grip', '⋮⋮');
+		grip.setAttribute('aria-hidden', 'true');
+		open.append(grip, coinBadge(instrument), element('span', '', symbolLabel(instrument)));
 		open.onclick = () => commit(openInstrument(state, instrument));
 		symbolCell.append(open);
+
+		if (watchEditMode) {
+			const actionsCell = element('td', 'watch-edit-cell');
+			actionsCell.colSpan = 2;
+			const actionsWrap = element('div', 'watch-edit-actions');
+			const moveUp = iconButton('arrowUp', `上移 ${symbolLabel(instrument)}`, () => saveWatchlist(reorderWatchlist(instruments, index, index - 1)));
+			moveUp.className = 'watch-manage-btn';
+			moveUp.disabled = index === 0;
+			const moveDown = iconButton('arrowDown', `下移 ${symbolLabel(instrument)}`, () => saveWatchlist(reorderWatchlist(instruments, index, index + 1)));
+			moveDown.className = 'watch-manage-btn';
+			moveDown.disabled = index === instruments.length - 1;
+			const remove = iconButton('trash', `从自选列表移除 ${symbolLabel(instrument)}`, () => saveWatchlist(removeFromWatchlist(instruments, instrument)));
+			remove.className = 'watch-manage-btn danger';
+			actionsWrap.append(moveUp, moveDown, remove);
+			actionsCell.append(actionsWrap);
+			row.append(symbolCell, actionsCell);
+			tableBody.append(row);
+			return;
+		}
+
 		const quote = quotes.get(key);
 		const price = element('td', 'quote-price', quote ? formatPrice(quote.price) : '—');
 		const change = element('td', `quote-change ${quote ? quote.percent >= 0 ? 'positive' : 'negative' : ''}`, quote ? `${quote.percent >= 0 ? '+' : ''}${quote.percent.toFixed(2)}%` : '—');
 		row.append(symbolCell, price, change);
 		tableBody.append(row);
 		quoteRows.set(key, { row, price, change });
+	});
+}
+function saveWatchlist(next: readonly Instrument[], sync = true): void {
+	setWatchlistInstruments(next);
+	const payload = { schemaVersion: 1 as const, items: instruments.map(item => ({ ...item })) };
+	try {
+		localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(payload));
+	} catch {
+		// Ignore localStorage quota errors.
 	}
+	renderWatchRows();
+	ensureWatchlist();
+	mobile.refreshWatchlist();
+	if (sync) void syncEngine.enqueueSetting('watchlist', payload as unknown as Record<string, unknown>);
 }
 renderWatchRows();
-const watchNote = element('div', 'watch-note', 'Binance · USDT 现货 / 永续');
 const detail = element('section', 'market-detail');
 detail.setAttribute('aria-label', '交易对详情');
-watchlist.append(watchHeading, table, watchNote, element('div', 'watch-spacer'), detail);
+watchlist.append(watchHeading, table, element('div', 'watch-spacer'), detail);
 const sidebarScrim = element('button', 'sidebar-scrim');
 sidebarScrim.setAttribute('aria-label', '收起自选列表');
 sidebarScrim.onclick = () => toggleWatchlist(false);
@@ -222,7 +396,7 @@ rightRail.setAttribute('aria-label', '侧边面板');
 const railWatch = iconButton('list', '自选列表面板', () => toggleWatchlist());
 rightRail.append(railWatch, unavailableButton('clock', '提醒'), iconButton('layers', '绘图对象树', () => drawingUI.openObjects()), unavailableButton('calendar', '财经日历'));
 const rightBottom = element('div', 'rail-bottom');
-rightBottom.append(unavailableButton('bell', '通知'), iconButton('help', '使用说明', () => about.showModal()));
+rightBottom.append(iconButton('cloud', '云同步与数据迁移', () => syncDialog.open()), unavailableButton('bell', '通知'), iconButton('help', '使用说明', () => about.showModal()));
 rightRail.append(rightBottom);
 workspace.append(drawingRail, chartPanel, sidebarScrim, watchlist, rightRail);
 
@@ -231,7 +405,15 @@ const status = element('span', 'save-status');
 status.setAttribute('role', 'status');
 const sourceStatus = element('span', 'source-status');
 sourceStatus.append(element('i', 'status-dot'), document.createTextNode('Binance · 连接中'));
-footer.append(sourceStatus, element('span', 'footer-divider'), status, element('span', 'spacer'), element('span', 'sync-status', '云同步未连接'));
+const syncStatusBtn = element('button', 'sync-status-btn');
+syncStatusBtn.type = 'button';
+syncStatusBtn.dataset.state = 'disabled';
+syncStatusBtn.setAttribute('aria-label', '打开云同步与数据迁移设置');
+const syncStatusDot = element('i', 'sync-status-dot');
+const syncStatusText = element('span', '', '云同步未启用');
+syncStatusBtn.append(syncStatusDot, syncStatusText);
+syncStatusBtn.onclick = () => syncDialog.open();
+footer.append(sourceStatus, element('span', 'footer-divider'), status, element('span', 'spacer'), syncStatusBtn);
 
 // Native dialogs keep search and information available on narrow screens, too.
 const picker = element('dialog', 'symbol-dialog');
@@ -263,7 +445,7 @@ attribution.target = '_blank';
 attribution.rel = 'noopener noreferrer';
 about.append(aboutHead, element('p', '', '为你的市场观察，留一个专注的空间。'),
 	element('p', '', '从顶部或自选列表打开交易对，各标签独立保存周期。使用“指标”切换均线、成交量与 MACD。'),
-	element('p', '', '行情来自 Binance USDT 现货和永续公开接口，无需 API Key。设置和画线自动保存在本机。云同步尚未连接。'),
+	element('p', '', '行情来自 Binance USDT 现货和永续公开接口，无需 API Key。设置和画线自动保存在本机，支持自托管单人 SQLite 云同步与 JSON / SQLite 备份迁移。'),
 	attribution, element('small', '', 'Copyright (с) 2025 TradingView, Inc.'));
 const indicatorDropdown = element('div', 'indicator-dropdown');
 indicatorDropdown.hidden = true;
@@ -338,6 +520,7 @@ function openIndicatorDropdown(focusId?: string): void {
 }
 
 function closeIndicatorDropdown(): void {
+	closeIndicatorColorPopover();
 	if (indicatorDropdown.hidden) return;
 	indicatorDropdown.hidden = true;
 	indicatorButton.setAttribute('aria-expanded', 'false');
@@ -360,6 +543,7 @@ function applyIndicators(): void {
 	}
 	chart?.setIndicators(settings);
 	updateIndicatorLabels();
+	void syncEngine.enqueueSetting('indicators', settings as unknown as Record<string, unknown>);
 }
 
 function syncPriceOverlayHeight(): void {
@@ -420,6 +604,7 @@ drawingRail.append(railBottom);
 const mobile = createMobileUI({
 	openDrawings: () => drawingUI.openTools(),
 	openDrawingObjects: () => drawingUI.openObjects(),
+	openSync: () => syncDialog.open(),
 	drawingHistory: () => ({
 		canUndo: drawingSession?.manager.canUndo() ?? false,
 		canRedo: drawingSession?.manager.canRedo() ?? false,
@@ -431,6 +616,8 @@ const mobile = createMobileUI({
 		preserveMobileTimeframe();
 		commit(openInstrument(state, instrument));
 	},
+	reorderWatchlist: (fromIndex, toIndex) => saveWatchlist(reorderWatchlist(instruments, fromIndex, toIndex)),
+	removeWatchlist: instrument => saveWatchlist(removeFromWatchlist(instruments, instrument)),
 	openSearch: openPicker,
 	setTimeframe: timeframe => {
 		saveMobileTimeframe(timeframe);
@@ -473,11 +660,18 @@ function renderSearch(): void {
 	searchNotice.textContent = catalogueNotice;
 	const results = catalogue.filter(instrument => (searchMarket === 'all' || instrument.market === searchMarket) && `${instrument.symbol} ${symbolLabel(instrument)} ${marketFor(instrument).name}`.toLowerCase().includes(query)).slice(0, 100);
 	for (const instrument of results) {
-		const button = element('button', 'search-result');
+		const row = element('div', 'search-result');
+		const open = element('button', 'search-result-main');
+		open.type = 'button';
 		const copy = element('span', 'search-copy');
-		copy.append(element('strong', '', instrument.symbol.replace('-', ' / ')), element('small', '', marketFor(instrument).name));
-		button.append(coinBadge(instrument), copy, element('span', 'search-venue', `BINANCE · ${marketLabel(instrument)}`), icon('plus'));
-		button.onclick = () => {
+		const sub = element('span', 'search-sub');
+		sub.append(
+			element('small', '', `${marketFor(instrument).name} / TetherUS`),
+			element('span', `search-market-tag ${instrument.market}`, instrument.market === 'perpetual' ? '永续合约' : '现货'),
+		);
+		copy.append(element('strong', '', symbolLabel(instrument)), sub);
+		open.append(coinBadge(instrument), copy, element('span', 'search-venue', 'BINANCE'));
+		open.onclick = () => {
 			if (mobile.isMobile()) {
 				preserveMobileTimeframe();
 				mobile.showChart();
@@ -485,7 +679,26 @@ function renderSearch(): void {
 			commit(openInstrument(state, instrument));
 			picker.close();
 		};
-		searchResults.append(button);
+
+		const watchToggle = element('button', 'search-watch-toggle');
+		watchToggle.type = 'button';
+		const syncToggleState = (watched: boolean): void => {
+			watchToggle.classList.toggle('is-watched', watched);
+			watchToggle.setAttribute('aria-pressed', String(watched));
+			watchToggle.setAttribute('aria-label', `${watched ? '从自选列表移除' : '添加到自选列表'} ${symbolLabel(instrument)}`);
+			watchToggle.title = watched ? '已在自选列表，点击移除' : '添加到自选列表';
+			watchToggle.replaceChildren(icon(watched ? 'check' : 'plus'));
+		};
+		syncToggleState(hasInWatchlist(instruments, instrument));
+		watchToggle.onclick = event => {
+			event.stopPropagation();
+			const toggled = toggleWatchlistItem(instruments, instrument);
+			saveWatchlist(toggled.items);
+			syncToggleState(toggled.added);
+		};
+
+		row.append(open, watchToggle);
+		searchResults.append(row);
 	}
 	if (results.length === 0) searchResults.append(element('p', 'search-empty', '没有找到匹配的交易对'));
 }
@@ -502,6 +715,9 @@ function toggleWatchlist(force?: boolean): void {
 }
 
 function commit(next: Workspace): void {
+	const tabsChanged = next.activeTabId !== state.activeTabId ||
+		next.tabs.length !== state.tabs.length ||
+		next.tabs.some((tab, i) => tab.id !== state.tabs[i]?.id || tab.instrumentKey !== state.tabs[i]?.instrumentKey);
 	state = next;
 	ensureWatchlist();
 	try {
@@ -509,6 +725,13 @@ function commit(next: Workspace): void {
 		storageNotice = '已保存到本机';
 	} catch {
 		storageNotice = '保存失败，修改仅在当前会话中有效';
+	}
+	if (tabsChanged) {
+		void syncEngine.enqueueSetting('workspace-tabs', {
+			schemaVersion: 1,
+			tabs: state.tabs.map(tab => ({ ...tab })),
+			activeTabId: state.activeTabId,
+		});
 	}
 	render();
 }
@@ -761,7 +984,15 @@ function render(): void {
 		active.instrumentKey,
 		TIMEFRAME_SECONDS[activeTimeframe],
 		(message, error) => drawingUI.setStatus(message, error),
-		() => { if (current()) drawingUI.setReady(true); }
+		() => { if (current()) drawingUI.setReady(true); },
+		{
+			onSaved: changed => {
+				for (const doc of changed) void syncEngine.enqueueDrawing(doc);
+			},
+			onStyleDefaultChanged: () => {
+				void syncEngine.enqueueSetting('drawing-defaults', exportSharedStyleDefaults());
+			},
+		},
 	);
 	const currentDrawings = drawingSession;
 	drawingUI.attach(currentDrawings);
@@ -823,22 +1054,29 @@ function flushQuotes(): void {
 }
 
 function ensureWatchlist(): void {
-	let changed = false;
+	const subscribed: Instrument[] = [];
+	const seen = new Set<string>();
+	for (const instrument of instruments) {
+		const key = instrumentKey(instrument);
+		if (!seen.has(key)) { seen.add(key); subscribed.push(instrument); }
+	}
 	for (const tab of state.tabs) {
 		const instrument = state.preferences[tab.instrumentKey].instrument;
-		if (instrument.venue === 'binance' && !instruments.some(i => instrumentKey(i) === tab.instrumentKey)) { instruments.push(instrument); changed = true; }
+		if (instrument.venue === 'binance' && !seen.has(tab.instrumentKey)) {
+			seen.add(tab.instrumentKey);
+			subscribed.push(instrument);
+		}
 	}
-	if (changed) renderWatchRows();
-	const signature = instruments.map(instrumentKey).join(',');
+	const signature = subscribed.map(instrumentKey).join(',');
 	if (signature === quoteSubscription) return;
 	stopQuotes?.();
 	quoteSubscription = signature;
-	stopQuotes = startQuoteFeed(provider, instruments, (instrument, quote) => {
+	if (subscribed.length === 0) return;
+	stopQuotes = startQuoteFeed(provider, subscribed, (instrument, quote) => {
 		quotes.set(instrumentKey(instrument), quote);
 		if (!quoteFlush) quoteFlush = setTimeout(flushQuotes, 400);
 	}, (market, message) => {
 		quoteStates[market] = message;
-		watchNote.textContent = `现货：${quoteStates.spot} · 永续：${quoteStates.perpetual}`;
 		mobile.setQuoteStatus(`现货：${quoteStates.spot} · 永续：${quoteStates.perpetual}`);
 	});
 }
@@ -863,13 +1101,18 @@ function updateClock(): void {
 	timeLabel.textContent = `${new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit' }).format(new Date())} UTC+8`;
 }
 function onDocumentPointerDown(event: PointerEvent): void {
+	if (watchContextMenu && event.target instanceof Node && !watchContextMenu.contains(event.target)) {
+		closeWatchContextMenu();
+	}
 	if (indicatorDropdown.hidden) return;
+	if (event.target instanceof Element && event.target.closest('.tv-color-popover')) return;
 	if (event.target instanceof Node && !indicatorDropdown.contains(event.target) && !indicatorButton.contains(event.target)) {
 		closeIndicatorDropdown();
 	}
 }
 function onKeyDown(event: KeyboardEvent): void {
 	if (event.key === 'Escape') {
+		if (watchContextMenu) { closeWatchContextMenu(); return; }
 		if (!indicatorDropdown.hidden) { closeIndicatorDropdown(); return; }
 		if (chart?.getMaximizedPane()) {
 			chart.setMaximizedPane(null);
@@ -900,19 +1143,307 @@ const onPageHide = (): void => {
 	chart?.destroy(); chart = undefined;
 };
 const onPageShow = (event: PageTransitionEvent): void => { if (event.persisted) { ensureWatchlist(); render(); updateClock(); void loadCatalogue(); } };
-const onOnline = (): void => { feed?.retry(); };
-const onVisibility = (): void => { if (!document.hidden) feed?.retry(); else drawingSession?.flush(); };
+let remoteWorkspaceDirty = false;
+const DRAWING_KEY_PREFIX = 'crypto-terminal.drawings.v1.';
+
+function readAllLocalDrawingStores(): Map<string, DrawingStore> {
+	const stores = new Map<string, DrawingStore>();
+	try {
+		for (let i = 0; i < localStorage.length; i++) {
+			const storageKey = localStorage.key(i);
+			if (!storageKey || !storageKey.startsWith(DRAWING_KEY_PREFIX)) continue;
+			const key = storageKey.slice(DRAWING_KEY_PREFIX.length);
+			const raw = localStorage.getItem(storageKey);
+			if (!raw) continue;
+			try {
+				stores.set(key, parseDrawingStore(JSON.parse(raw), key));
+			} catch {
+				// Skip malformed drawing records rather than throwing during export.
+			}
+		}
+	} catch {
+		// Ignore localStorage enumeration errors.
+	}
+	if (drawingSession) {
+		const activeStore = drawingSession.exportStore();
+		stores.set(activeStore.instrumentKey, activeStore);
+	}
+	return stores;
+}
+
+function writeDrawingStoreToStorage(key: string, records: readonly SyncedDrawingRecord[], replace: boolean): void {
+	if (!replace && drawingSession && drawingSession.instrumentKey === key) {
+		drawingSession.applySyncedDocuments(records);
+		return;
+	}
+	const storageKey = drawingStorageKey(key);
+	const merged = new Map<string, DrawingStore['documents'][number]>();
+	if (!replace) {
+		try {
+			const raw = localStorage.getItem(storageKey);
+			if (raw) {
+				const existing = parseDrawingStore(JSON.parse(raw), key);
+				for (const doc of existing.documents) merged.set(doc.id, doc);
+			}
+		} catch {
+			// Fall through with incoming validated records.
+		}
+	}
+	for (const rec of records) {
+		merged.set(rec.id, {
+			schemaVersion: 1,
+			id: rec.id,
+			instrumentKey: key,
+			kind: rec.kind,
+			anchors: structuredClone(rec.anchors),
+			style: structuredClone(rec.style),
+			revision: rec.revision,
+			deleted: rec.deleted,
+		});
+	}
+	const store: DrawingStore = { schemaVersion: 1, instrumentKey: key, documents: [...merged.values()] };
+	try {
+		parseDrawingStore(store, key);
+		localStorage.setItem(storageKey, JSON.stringify(store));
+	} catch {
+		// Ignore invalid drawing records or storage quota issues.
+	}
+}
+
+function applyRemoteSettingRecord(record: SyncedSettingRecord): void {
+	try {
+		if (record.key === 'indicators') {
+			const parsed = parseIndicatorSettings(record.value);
+			// Mutate in place so mobile sheet and desktop panel always share the live settings reference.
+			Object.assign(settings, parsed);
+			localStorage.setItem(INDICATOR_STORAGE_KEY, JSON.stringify(settings));
+			chart?.setIndicators(settings);
+			updateIndicatorLabels();
+		} else if (record.key === 'timeframes') {
+			timeframeUI.setPrefs(parseTimeframePreferences(record.value));
+		} else if (record.key === 'drawing-defaults') {
+			const parsed = parseDrawingStyleDefaultsStore(record.value);
+			localStorage.setItem(DRAWING_DEFAULTS_STORAGE_KEY, JSON.stringify(parsed));
+			reloadSharedStyleDefaults();
+		} else if (record.key === 'custom-colors') {
+			const parsed = parseCustomColorsStore(record.value);
+			localStorage.setItem(CUSTOM_COLORS_STORAGE_KEY, JSON.stringify(parsed));
+			reloadSharedCustomColors();
+		} else if (record.key === 'watchlist') {
+			const parsed = parseWatchlistStore(record.value);
+			saveWatchlist(parsed.items, false);
+			if (picker.open) renderSearch();
+		} else if (record.key === 'workspace-tabs') {
+			const parsed = parseWorkspaceTabsSnapshot(record.value);
+			const preferences: Workspace['preferences'] = { ...state.preferences };
+			for (const tab of parsed.tabs) {
+				if (!preferences[tab.instrumentKey]) {
+					preferences[tab.instrumentKey] = {
+						instrument: parseInstrumentKey(tab.instrumentKey),
+						timeframe: '1h',
+					};
+				}
+			}
+			const nextWorkspace: Workspace = {
+				schemaVersion: 1,
+				tabs: parsed.tabs.map(tab => ({ ...tab })),
+				activeTabId: parsed.activeTabId,
+				preferences,
+			};
+			if (JSON.stringify({ tabs: state.tabs, activeTabId: state.activeTabId }) !== JSON.stringify({ tabs: nextWorkspace.tabs, activeTabId: nextWorkspace.activeTabId })) {
+				state = nextWorkspace;
+				try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
+				remoteWorkspaceDirty = true;
+			}
+		}
+	} catch {
+		// Ignore incompatible remote setting payload.
+	}
+}
+
+const syncEngine = new SyncEngine(
+	new IndexedDbSyncStorage(),
+	{
+		exportLocalSnapshot(): SyncSnapshot {
+			const now = new Date().toISOString();
+			const syncedInstruments: SyncedInstrumentState[] = Object.entries(state.preferences).map(([key, pref]) => ({
+				instrumentKey: key,
+				instrument: { ...pref.instrument },
+				timeframe: pref.timeframe,
+				revision: 1,
+				updatedAt: now,
+			}));
+			const stores = readAllLocalDrawingStores();
+			const syncedDrawings: SyncedDrawingRecord[] = [];
+			for (const store of stores.values()) {
+				for (const doc of store.documents) {
+					syncedDrawings.push({ ...structuredClone(doc), updatedAt: now });
+				}
+			}
+			return {
+				schemaVersion: 1,
+				storeId: syncEngine.getViewState().config.lastStoreId ?? 'local-snapshot',
+				exportedAt: now,
+				instruments: syncedInstruments,
+				drawings: syncedDrawings,
+				settings: {
+					indicators: {
+						key: 'indicators',
+						value: structuredClone(settings) as unknown as Record<string, unknown>,
+						revision: 1,
+						updatedAt: now,
+					},
+					timeframes: {
+						key: 'timeframes',
+						value: timeframeUI.getPrefs() as unknown as Record<string, unknown>,
+						revision: 1,
+						updatedAt: now,
+					},
+					'drawing-defaults': {
+						key: 'drawing-defaults',
+						value: exportSharedStyleDefaults(),
+						revision: 1,
+						updatedAt: now,
+					},
+					'custom-colors': {
+						key: 'custom-colors',
+						value: exportSharedCustomColors(),
+						revision: 1,
+						updatedAt: now,
+					},
+					watchlist: {
+						key: 'watchlist',
+						value: { schemaVersion: 1, items: instruments.map(item => ({ ...item })) },
+						revision: 1,
+						updatedAt: now,
+					},
+					'workspace-tabs': {
+						key: 'workspace-tabs',
+						value: {
+							schemaVersion: 1,
+							tabs: state.tabs.map(tab => ({ ...tab })),
+							activeTabId: state.activeTabId,
+						},
+						revision: 1,
+						updatedAt: now,
+					},
+				},
+			};
+		},
+		applyRemotePreference(item: SyncedInstrumentState): void {
+			const existing = state.preferences[item.instrumentKey];
+			if (existing && existing.timeframe === item.timeframe) return;
+			state = {
+				...state,
+				preferences: {
+					...state.preferences,
+					[item.instrumentKey]: { instrument: { ...item.instrument }, timeframe: item.timeframe },
+				},
+			};
+			try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
+			remoteWorkspaceDirty = true;
+		},
+		applyRemoteDrawings(key: string, records: SyncedDrawingRecord[]): void {
+			writeDrawingStoreToStorage(key, records, false);
+		},
+		confirmDrawingRevision(key: string, drawingId: string, revision: number): void {
+			if (drawingSession && drawingSession.instrumentKey === key) {
+				drawingSession.confirmSyncedRevision(drawingId, revision);
+				return;
+			}
+			const storageKey = drawingStorageKey(key);
+			try {
+				const raw = localStorage.getItem(storageKey);
+				if (!raw) return;
+				const store = parseDrawingStore(JSON.parse(raw), key);
+				const next: DrawingStore = {
+					...store,
+					documents: store.documents.map(doc => doc.id === drawingId ? { ...doc, revision } : doc),
+				};
+				localStorage.setItem(storageKey, JSON.stringify(next));
+			} catch {
+				// Ignore storage errors.
+			}
+		},
+		applyRemoteSetting(record: SyncedSettingRecord): void {
+			applyRemoteSettingRecord(record);
+		},
+		replaceLocalFromSnapshot(snapshot: SyncSnapshot): void {
+			const nextPreferences: Workspace['preferences'] = {};
+			for (const item of snapshot.instruments) {
+				nextPreferences[item.instrumentKey] = { instrument: { ...item.instrument }, timeframe: item.timeframe };
+			}
+			// Preserve open tabs whose preferences exist, or keep default preference for currently open tabs.
+			for (const tab of state.tabs) {
+				if (!nextPreferences[tab.instrumentKey] && state.preferences[tab.instrumentKey]) {
+					nextPreferences[tab.instrumentKey] = state.preferences[tab.instrumentKey];
+				}
+			}
+			state = { ...state, preferences: nextPreferences };
+			try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch { /* ignore */ }
+
+			// Replace local drawings cleanly by instrument.
+			try {
+				const keysToClear: string[] = [];
+				for (let i = 0; i < localStorage.length; i++) {
+					const k = localStorage.key(i);
+					if (k?.startsWith(DRAWING_KEY_PREFIX)) keysToClear.push(k);
+				}
+				for (const k of keysToClear) localStorage.removeItem(k);
+			} catch {
+				// Ignore storage errors.
+			}
+			const grouped = new Map<string, SyncedDrawingRecord[]>();
+			for (const rec of snapshot.drawings) {
+				const list = grouped.get(rec.instrumentKey) ?? [];
+				list.push(rec);
+				grouped.set(rec.instrumentKey, list);
+			}
+			for (const [key, list] of grouped) writeDrawingStoreToStorage(key, list, true);
+			for (const record of Object.values(snapshot.settings)) applyRemoteSettingRecord(record);
+			remoteWorkspaceDirty = true;
+		},
+		onRemoteApplied(): void {
+			if (!remoteWorkspaceDirty) return;
+			remoteWorkspaceDirty = false;
+			ensureWatchlist();
+			render();
+		},
+	},
+	{ fallbackOrigin: window.location.origin },
+);
+
+const syncDialog = createSyncDialog(app, syncEngine);
+setCustomColorsChangeListener(() => {
+	void syncEngine.enqueueSetting('custom-colors', exportSharedCustomColors());
+});
+const unsubscribeSync = syncEngine.subscribe(view => {
+	syncStatusBtn.dataset.state = view.status;
+	syncStatusText.textContent = view.message;
+	mobile.setSyncStatus(view.message);
+});
+
+const onOnline = (): void => { feed?.retry(); void syncEngine.syncNow(); };
+const onVisibility = (): void => { if (!document.hidden) { feed?.retry(); void syncEngine.syncNow(); } else drawingSession?.flush(); };
+const onBeforeUnload = (): void => { drawingSession?.flush(); };
 window.addEventListener('online', onOnline);
 document.addEventListener('visibilitychange', onVisibility);
 document.addEventListener('pointerdown', onDocumentPointerDown);
 document.addEventListener('keydown', onKeyDown);
 window.addEventListener('resize', onWindowResize);
+window.addEventListener('beforeunload', onBeforeUnload);
 window.addEventListener('pagehide', onPageHide);
 window.addEventListener('pageshow', onPageShow);
 const clockTimer = window.setInterval(updateClock, 30000);
 if (import.meta.hot) import.meta.hot.dispose(() => {
 	stopChartPinch();
 	stopViewportZoomGuard();
+	closeWatchContextMenu();
+	closeIndicatorColorPopover();
+	setCustomColorsChangeListener(undefined);
+	unsubscribeSync();
+	syncEngine.stopPolling();
+	syncDialog.destroy();
 	timeframeUI.destroy();
 	mobile.destroy();
 	onPageHide();
@@ -921,6 +1452,7 @@ if (import.meta.hot) import.meta.hot.dispose(() => {
 	document.removeEventListener('pointerdown', onDocumentPointerDown);
 	document.removeEventListener('keydown', onKeyDown);
 	window.removeEventListener('resize', onWindowResize);
+	window.removeEventListener('beforeunload', onBeforeUnload);
 	window.removeEventListener('pagehide', onPageHide);
 	window.removeEventListener('pageshow', onPageShow);
 	window.removeEventListener('online', onOnline);
@@ -931,3 +1463,4 @@ updateSidebarAccessibility();
 ensureWatchlist();
 render();
 void loadCatalogue();
+void syncEngine.init().then(() => syncEngine.startPolling(30000));

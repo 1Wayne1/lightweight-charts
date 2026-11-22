@@ -1,6 +1,6 @@
 import {
 	CandlestickSeries, ColorType, CrosshairMode, HistogramSeries, LineSeries, LineStyle, createChart,
-	type IPaneApi, type ISeriesApi, type Time, type UTCTimestamp,
+	type IPaneApi, type ISeriesApi, type ISeriesPrimitive, type ISeriesPrimitiveAxisView, type SeriesAttachedParameter, type Time, type UTCTimestamp,
 } from 'lightweight-charts';
 import type { Candle } from '@terminal/domain';
 import {
@@ -148,6 +148,38 @@ export function createTerminalChart(
 		lastValueVisible: false, visible: currentSettings.volume,
 	});
 	volume.priceScale().applyOptions({ scaleMargins: { top: 0.83, bottom: 0 } });
+
+	// Native right-axis badge for latest volume (volume itself uses an overlay scale so bars don't distort price).
+	let volumeBadgeVisible = false;
+	let volumeBadgeText = '';
+	let volumeBadgeColor = '#089981';
+	let volumeBadgeUpdate: (() => void) | undefined;
+	const volumeAxisView: ISeriesPrimitiveAxisView = {
+		coordinate: () => Math.max(14, pricePane.getHeight() - 12),
+		text: () => volumeBadgeText,
+		textColor: () => '#ffffff',
+		backColor: () => volumeBadgeColor,
+		visible: () => volumeBadgeVisible && volumeBadgeText.length > 0,
+		tickVisible: () => false,
+	};
+	const volumeAxisPrimitive: ISeriesPrimitive<Time> = {
+		attached(param: SeriesAttachedParameter<Time>) { volumeBadgeUpdate = param.requestUpdate; },
+		detached() { volumeBadgeUpdate = undefined; },
+		priceAxisViews: () => [volumeAxisView],
+	};
+	candles.attachPrimitive(volumeAxisPrimitive);
+	const updateVolumeAxisLabel = (): void => {
+		const last = data.at(-1);
+		const visible = isIndicatorVisible(currentSettings, 'volume') && Boolean(last);
+		volumeBadgeVisible = visible;
+		if (visible && last) {
+			volumeBadgeText = volume.priceFormatter().format(last.volume);
+			volumeBadgeColor = last.close >= last.open ? '#089981' : '#f23645';
+		} else {
+			volumeBadgeText = '';
+		}
+		volumeBadgeUpdate?.();
+	};
 
 	const overlays = new Map<string, MountedIndicator>();
 	const subPanes = new Map<string, MountedIndicator>();
@@ -456,6 +488,7 @@ export function createTerminalChart(
 		maSeries.forEach((series, i) => series.applyOptions({ visible: isIndicatorVisible(currentSettings, 'ma') && Boolean(currentSettings.maLines[i]?.visible) }));
 		emaSeries.forEach((series, i) => series.applyOptions({ visible: isIndicatorVisible(currentSettings, 'ema') && Boolean(currentSettings.emaLines[i]?.visible) }));
 		volume.applyOptions({ visible: isIndicatorVisible(currentSettings, 'volume') });
+		updateVolumeAxisLabel();
 		for (const [id, entry] of [...overlays, ...subPanes]) {
 			for (const series of entry.series.values()) series.applyOptions({ visible: isIndicatorVisible(currentSettings, id) });
 		}
@@ -527,6 +560,7 @@ export function createTerminalChart(
 			const time = candle.time as UTCTimestamp;
 			candles.update({ ...candle, time });
 			volume.update({ time, value: candle.volume, color: candle.close >= candle.open ? '#08998155' : '#f2364555' });
+			updateVolumeAxisLabel();
 			for (let i = 0; i < currentSettings.maLines.length; i++) {
 				const runner = maRunners[i];
 				if (!runner) continue;
@@ -576,6 +610,7 @@ export function createTerminalChart(
 		},
 		destroy() {
 			if (layoutFrame !== undefined) cancelAnimationFrame(layoutFrame);
+			candles.detachPrimitive(volumeAxisPrimitive);
 			observer.disconnect();
 			chart.remove();
 		},

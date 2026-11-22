@@ -59,10 +59,31 @@ test('stream parsing checks symbol and timeframe and keeps UTC seconds and base 
 	assert.equal(parseQuote({ lastPrice: '102', priceChange: '2', priceChangePercent: '2', highPrice: '110', lowPrice: '90', closeTime: time * 1000 }).percent, 2);
 });
 
-test('catalogue admits trading USDT spot and perpetual only, with exchange tick sizes', () => {
+test('catalogue admits trading USDT spot and perpetual (including TradFi) only, with exchange tick sizes', () => {
 	const symbol = { symbol: 'BTCUSDT', status: 'TRADING', baseAsset: 'BTC', quoteAsset: 'USDT', contractType: 'PERPETUAL', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.10' }] };
-	assert.deepEqual(parseExchangeInfo({ symbols: [symbol, { ...symbol, contractType: 'CURRENT_QUARTER' }, { ...symbol, status: 'BREAK' }] }, 'perpetual'), [{ instrument: perpetual, tickSize: .1 }]);
-	assert.equal(parseExchangeInfo({ symbols: [{ ...symbol, isSpotTradingAllowed: false }] }, 'spot').length, 0);
+	const nvda = { symbol: 'NVDAUSDT', status: 'TRADING', baseAsset: 'NVDA', quoteAsset: 'USDT', contractType: 'TRADIFI_PERPETUAL', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.01' }] };
+	const xau = { symbol: 'XAUUSDT', status: 'TRADING', baseAsset: 'XAU', quoteAsset: 'USDT', contractType: 'TRADIFI_PERPETUAL', filters: [{ filterType: 'PRICE_FILTER', tickSize: '0.01' }] };
+	const mismatched = { ...nvda, symbol: 'NVDAUSDC', baseAsset: 'NVDA' };
+	const nonUsdt = { ...nvda, symbol: 'NVDAUSDC', quoteAsset: 'USDC' };
+	assert.deepEqual(
+		parseExchangeInfo({
+			symbols: [
+				symbol,
+				nvda,
+				xau,
+				{ ...symbol, contractType: 'CURRENT_QUARTER' },
+				{ ...symbol, status: 'BREAK' },
+				mismatched,
+				nonUsdt,
+			],
+		}, 'perpetual'),
+		[
+			{ instrument: perpetual, tickSize: .1 },
+			{ instrument: { venue: 'binance', market: 'perpetual', symbol: 'NVDA-USDT' }, tickSize: .01 },
+			{ instrument: { venue: 'binance', market: 'perpetual', symbol: 'XAU-USDT' }, tickSize: .01 },
+		],
+	);
+	assert.deepEqual(parseExchangeInfo({ symbols: [{ ...symbol, isSpotTradingAllowed: true }, { ...symbol, symbol: 'ETHUSDT', baseAsset: 'ETH', isSpotTradingAllowed: false }] }, 'spot'), [{ instrument: spot, tickSize: .1 }]);
 });
 
 test('HTTP rate limits respect Retry-After and prevent repeated requests; cancellation reaches fetch', async () => {

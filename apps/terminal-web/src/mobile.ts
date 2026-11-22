@@ -2,7 +2,7 @@ import { instrumentKey, type ConnectionState, type Instrument, type MarketQuote,
 import type { IndicatorSettings } from './chart';
 import { TIMEFRAME_GROUPS, TIMEFRAME_LONG_LABELS, TIMEFRAME_SHORT_LABELS } from './data/timeframes';
 import { HoldSwitcher } from './hold-switcher';
-import { renderIndicatorPanel } from './indicator-ui';
+import { closeIndicatorColorPopover, renderIndicatorPanel } from './indicator-ui';
 import { coinBadge, formatPrice, instruments, marketFor, marketLabel, symbolLabel } from './markets';
 import { element, icon, iconButton } from './ui';
 
@@ -15,9 +15,12 @@ interface MobileOptions {
 	priceOverlay: HTMLElement;
 	settings: IndicatorSettings;
 	openInstrument(instrument: Instrument): void;
+	reorderWatchlist(fromIndex: number, toIndex: number): void;
+	removeWatchlist(instrument: Instrument): void;
 	openSearch(): void;
 	openDrawings(): void;
 	openDrawingObjects(): void;
+	openSync(): void;
 	drawingHistory(): { canUndo: boolean; canRedo: boolean; undo(): void; redo(): void };
 	setTimeframe(timeframe: Timeframe): void;
 	setRange(seconds: number): void;
@@ -36,13 +39,26 @@ export function createMobileUI(options: MobileOptions) {
 	let quoteMap = new Map<string, MarketQuote>();
 	const cleanups: (() => void)[] = [];
 
+	let watchEditMode = false;
 	const watchPage = element('section', 'mobile-watch-page');
 	watchPage.id = 'mobile-watch-page';
 	watchPage.setAttribute('aria-label', '手机自选表');
 	const watchHeader = element('header', 'mobile-watch-header');
 	const watchBrand = element('span', 'mobile-brand');
 	watchBrand.append(icon('logo'), document.createTextNode('Crypto Terminal'));
-	watchHeader.append(watchBrand, iconButton('search', '搜索自选交易对', () => options.openSearch()));
+	const watchHeaderActions = element('div', 'mobile-watch-header-actions');
+	const watchEditBtn = element('button', 'mobile-watch-edit-btn', '编辑');
+	watchEditBtn.type = 'button';
+	watchEditBtn.setAttribute('aria-pressed', 'false');
+	watchEditBtn.onclick = () => {
+		watchEditMode = !watchEditMode;
+		watchEditBtn.textContent = watchEditMode ? '完成' : '编辑';
+		watchEditBtn.setAttribute('aria-pressed', String(watchEditMode));
+		renderedSymbols = '';
+		renderQuotes();
+	};
+	watchHeaderActions.append(watchEditBtn, iconButton('search', '搜索自选交易对', () => options.openSearch()));
+	watchHeader.append(watchBrand, watchHeaderActions);
 	const watchTitle = element('div', 'mobile-watch-title');
 	const heading = element('h1');
 	heading.append(element('span', 'flag'), document.createTextNode('自选表'));
@@ -137,6 +153,7 @@ export function createMobileUI(options: MobileOptions) {
 		if (sheet.open) sheet.close();
 	}
 	function closeSheetAnimated(immediate = false): void {
+		closeIndicatorColorPopover();
 		clearTimeout(sheetCloseTimer);
 		sheetCloseTimer = undefined;
 		if (!sheet.open) return;
@@ -251,10 +268,11 @@ export function createMobileUI(options: MobileOptions) {
 
 	function positionSymbolDrum(pos: number, animate = false): void {
 		const count = instruments.length;
-		if ((!active && !wheelOpen) || count === 0) {
+		const activeInWatchlist = Boolean(active && instruments.some(item => instrumentKey(item) === instrumentKey(active!)));
+		if ((!active && !wheelOpen) || count === 0 || (!wheelOpen && active && !activeInWatchlist)) {
 			symbolDrumTrack.classList.remove('is-animated');
 			drumSlots[0].item.textContent = '';
-			drumSlots[1].item.textContent = '搜索交易对';
+			drumSlots[1].item.textContent = active ? symbolLabel(active) : '搜索交易对';
 			drumSlots[1].item.classList.add('is-current');
 			drumSlots[1].item.style.transform = 'translate3d(0, 0, 0)';
 			drumSlots[2].item.textContent = '';
@@ -460,11 +478,18 @@ export function createMobileUI(options: MobileOptions) {
 	function showPage(next: typeof page): void {
 		clearGesture();
 		closeSheetAnimated(true);
+		if (next === 'chart' && watchEditMode) {
+			watchEditMode = false;
+			watchEditBtn.textContent = '编辑';
+			watchEditBtn.setAttribute('aria-pressed', 'false');
+			renderedSymbols = '';
+		}
 		if (next === 'watchlist' && fullscreen) setFullscreen(false);
 		page = next;
 		app.dataset.mobilePage = page;
 		watchTab.setAttribute('aria-current', page === 'watchlist' ? 'page' : 'false');
 		chartTab.setAttribute('aria-current', page === 'chart' ? 'page' : 'false');
+		if (next === 'watchlist') renderQuotes();
 	}
 
 	function openSheet(title: string): void {
@@ -535,19 +560,96 @@ export function createMobileUI(options: MobileOptions) {
 		const search = element('button', 'sheet-action', '搜索交易对');
 		search.type = 'button';
 		search.onclick = () => { closeSheetAnimated(true); options.openSearch(); };
-		sheetBody.append(objects, undo, redo, fit, search, element('p', 'mobile-sheet-note', 'Binance 现货 / USDT 永续 · 周期与画线保存在本机 · 云同步未接入'));
+		const syncBtn = element('button', 'sheet-action', `云同步与数据迁移（${syncLabel}）`);
+		syncBtn.type = 'button';
+		syncBtn.onclick = () => { closeSheetAnimated(true); options.openSync(); };
+		sheetBody.append(syncBtn, objects, undo, redo, fit, search, element('p', 'mobile-sheet-note', `Binance 现货 / USDT 永续 · 本机保存 · ${syncLabel}`));
 	}
 
 	const rowPrices = new Map<string, { price: HTMLElement; change: HTMLElement }>();
 	let renderedSymbols = '';
 	let connectionText = '连接中';
+	let syncLabel = '云同步未启用';
 	function renderQuotes(): void {
-		const signature = instruments.map(instrumentKey).join(',');
-		if (signature !== renderedSymbols) {
+		const signature = `${watchEditMode ? 'edit' : 'view'}:${instruments.map(instrumentKey).join(',')}`;
+		if (signature !== renderedSymbols || (instruments.length === 0 && watchRows.childElementCount === 0)) {
 			renderedSymbols = signature;
 			watchRows.replaceChildren();
 			rowPrices.clear();
-			for (const instrument of instruments) {
+			if (instruments.length === 0) {
+				watchRows.append(element('p', 'mobile-watch-empty', '自选表为空，点右上角搜索图标添加交易对'));
+			}
+			instruments.forEach((instrument, index) => {
+				if (watchEditMode) {
+					const row = element('div', 'mobile-watch-row is-editing');
+					row.dataset.index = String(index);
+					const copy = element('span', 'mobile-market-name');
+					copy.append(element('strong', '', symbolLabel(instrument)), element('small', '', `${marketFor(instrument).name} · ${marketLabel(instrument)}`));
+					const actions = element('div', 'mobile-watch-edit-actions');
+					const remove = iconButton('trash', `从自选移除 ${symbolLabel(instrument)}`, () => options.removeWatchlist(instrument));
+					remove.className = 'mobile-watch-delete';
+					const drag = element('button', 'mobile-watch-drag', '≡');
+					drag.type = 'button';
+					drag.setAttribute('aria-label', `拖动调整 ${symbolLabel(instrument)} 顺序`);
+					let pointerId: number | undefined;
+					let targetIndex = index;
+					let dropRow: HTMLElement | undefined;
+					const clearDrop = (): void => {
+						dropRow?.classList.remove('drop-before', 'drop-after');
+						dropRow = undefined;
+					};
+					drag.onpointerdown = event => {
+						if (!event.isPrimary || event.button !== 0) return;
+						event.preventDefault();
+						pointerId = event.pointerId;
+						targetIndex = index;
+						row.classList.add('is-dragging');
+						try { drag.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+					};
+					drag.onpointermove = event => {
+						if (pointerId !== event.pointerId) return;
+						const rows = [...watchRows.querySelectorAll<HTMLElement>('.mobile-watch-row.is-editing')];
+						let matched: HTMLElement | undefined;
+						let after = false;
+						for (const candidate of rows) {
+							const rect = candidate.getBoundingClientRect();
+							if (event.clientY >= rect.top && event.clientY <= rect.bottom) {
+								matched = candidate;
+								after = event.clientY >= rect.top + rect.height / 2;
+								break;
+							}
+						}
+						if (!matched && rows.length) {
+							const firstRect = rows[0].getBoundingClientRect();
+							matched = event.clientY < firstRect.top ? rows[0] : rows[rows.length - 1];
+							after = event.clientY >= firstRect.top;
+						}
+						clearDrop();
+						if (matched) {
+							matched.classList.add(after ? 'drop-after' : 'drop-before');
+							dropRow = matched;
+							const idx = Number(matched.dataset.index ?? index);
+							let nextTarget = after ? idx + 1 : idx;
+							if (index < nextTarget) nextTarget -= 1;
+							targetIndex = Math.max(0, Math.min(instruments.length - 1, nextTarget));
+						}
+					};
+					const finishDrag = (commit: boolean): void => {
+						if (pointerId === undefined) return;
+						const captured = pointerId;
+						pointerId = undefined;
+						try { if (drag.hasPointerCapture(captured)) drag.releasePointerCapture(captured); } catch { /* ignore */ }
+						row.classList.remove('is-dragging');
+						clearDrop();
+						if (commit && targetIndex !== index) options.reorderWatchlist(index, targetIndex);
+					};
+					drag.onpointerup = () => finishDrag(true);
+					drag.onpointercancel = () => finishDrag(false);
+					actions.append(remove, drag);
+					row.append(coinBadge(instrument), copy, actions);
+					watchRows.append(row);
+					return;
+				}
 				const row = element('button', 'mobile-watch-row');
 				row.type = 'button';
 				row.setAttribute('aria-label', `查看 ${instrument.symbol} ${marketLabel(instrument)} 图表`);
@@ -561,7 +663,7 @@ export function createMobileUI(options: MobileOptions) {
 				row.onclick = () => select(instrument);
 				watchRows.append(row);
 				rowPrices.set(instrumentKey(instrument), { price, change });
-			}
+			});
 		}
 		for (const [key, cells] of rowPrices) {
 			const quote = quoteMap.get(key);
@@ -615,6 +717,11 @@ export function createMobileUI(options: MobileOptions) {
 			renderQuotes();
 		},
 		setQuoteStatus(message: string) { quoteStatus.textContent = message; },
+		setSyncStatus(message: string) { syncLabel = message; },
+		refreshWatchlist() {
+			if (!wheelOpen) positionSymbolDrum(activeIndex(), false);
+			renderQuotes();
+		},
 		updateQuotes(quotes: Map<string, MarketQuote>) { quoteMap = quotes; renderQuotes(); },
 		showChart: () => showPage('chart'),
 		openIndicators,

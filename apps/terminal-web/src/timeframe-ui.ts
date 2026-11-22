@@ -11,6 +11,7 @@ export function createTimeframeUI(
 	app: HTMLElement,
 	container: HTMLElement,
 	onSelect: (timeframe: Timeframe) => void,
+	onPrefsChange?: (prefs: TimeframePreferences) => void,
 ) {
 	let prefs: TimeframePreferences;
 	try {
@@ -44,6 +45,7 @@ export function createTimeframeUI(
 		} catch {
 			// Ignore storage quota / privacy mode errors.
 		}
+		onPrefsChange?.(structuredClone(prefs));
 	}
 
 	function renderBar(): void {
@@ -177,6 +179,13 @@ export function createTimeframeUI(
 		update(timeframe?: Timeframe) {
 			hasActiveTab = timeframe !== undefined;
 			activeTimeframe = timeframe;
+			renderBar();
+			if (!dropdown.hidden) renderDropdown();
+		},
+		getPrefs: () => structuredClone(prefs),
+		setPrefs(next: TimeframePreferences) {
+			prefs = structuredClone(next);
+			try { localStorage.setItem(TIMEFRAME_STORAGE_KEY, JSON.stringify(prefs)); } catch { /* ignore */ }
 			renderBar();
 			if (!dropdown.hidden) renderDropdown();
 		},

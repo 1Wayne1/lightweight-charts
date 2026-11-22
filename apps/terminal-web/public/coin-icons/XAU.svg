@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24">
+	<path fill="url(#XAU__bg)" d="M24 0H0v24h24z"/>
+	<!-- Top ingot -->
+	<path fill="#FFFDF4" d="M9.55 6.4h4.9l1.05 3.15h-7z"/>
+	<path fill="#F3CE68" d="M8.5 9.55h7l-.3 1.15H8.8z"/>
+	<!-- Bottom-left ingot -->
+	<path fill="#FFFDF4" d="M5.75 12.5h4.9l1.05 3.15h-7z"/>
+	<path fill="#F3CE68" d="M4.7 15.65h7l-.3 1.15H5z"/>
+	<!-- Bottom-right ingot -->
+	<path fill="#FFFDF4" d="M13.35 12.5h4.9l1.05 3.15h-7z"/>
+	<path fill="#F3CE68" d="M12.3 15.65h7l-.3 1.15h-6.4z"/>
+	<defs>
+		<linearGradient id="XAU__bg" x1="2" x2="22" y1="2" y2="22" gradientUnits="userSpaceOnUse">
+			<stop stop-color="#F6CE55"/>
+			<stop offset=".55" stop-color="#D4951A"/>
+			<stop offset="1" stop-color="#9E6508"/>
+		</linearGradient>
+	</defs>
+</svg>

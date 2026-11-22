@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="6" y1="4" x2="58" y2="60" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1a2130" />
+      <stop offset="1" stop-color="#0c0f16" />
+    </linearGradient>
+    <linearGradient id="bull" x1="32" y1="12" x2="48" y2="32" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#22c59b" />
+      <stop offset="1" stop-color="#089981" />
+    </linearGradient>
+    <linearGradient id="trend" x1="15" y1="50.5" x2="49" y2="39.5" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4c87ff" />
+      <stop offset="1" stop-color="#79a4ff" />
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#bg)" stroke="#333d54" stroke-width="1.5" />
+  <path d="M10 22H54M10 38H54" stroke="#ffffff" stroke-opacity="0.06" stroke-width="1.2" />
+  <!-- Left bearish candle -->
+  <path d="M18 20V42" stroke="#f23645" stroke-width="2.6" stroke-linecap="round" />
+  <rect x="13.5" y="26" width="9" height="11" rx="2" fill="#f23645" />
+  <!-- Middle bullish candle -->
+  <path d="M32 13V38" stroke="#089981" stroke-width="2.6" stroke-linecap="round" />
+  <rect x="27.5" y="19" width="9" height="14" rx="2" fill="#089981" />
+  <!-- Right bullish candle -->
+  <path d="M46 8V31" stroke="#22c59b" stroke-width="2.6" stroke-linecap="round" />
+  <rect x="41.5" y="12" width="9" height="14" rx="2" fill="url(#bull)" />
+  <!-- Ascending support / drawing trendline -->
+  <path d="M17.85 49.58L46.15 40.42" stroke="url(#trend)" stroke-width="3" stroke-linecap="round" />
+  <circle cx="15" cy="50.5" r="3" fill="#10141e" stroke="#5c92ff" stroke-width="2.4" />
+  <circle cx="49" cy="39.5" r="3" fill="#10141e" stroke="#79a4ff" stroke-width="2.4" />
+</svg>
