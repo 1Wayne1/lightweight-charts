@@ -56,6 +56,15 @@ export class HorizontalLineDrawing extends BaseDrawing {
 		this._timeAxisViews.forEach(v => v.update(null, '', false, this._options.color));
 	}
 
+	public override anchorHandlePoints(width: number): readonly (ScreenPoint | null)[] {
+		const p1 = this._screenPoints[0];
+		if (!p1) return [];
+		// Fixed distance/proportion left of the right price axis so all horizontal lines align uniformly.
+		const offsetFromRight = Math.min(160, Math.max(48, width * 0.22));
+		const handleX = Math.max(24, width - offsetFromRight);
+		return [{ x: handleX, y: p1.y }];
+	}
+
 	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		if (!p1) return null;

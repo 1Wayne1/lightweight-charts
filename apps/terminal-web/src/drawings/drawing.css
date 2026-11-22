@@ -8,7 +8,7 @@
 .drawing-rail-button:disabled { opacity: .35; }
 .drawing-tool-slot > .drawing-group-expand { position: absolute; right: 0; top: 2px; width: 10px; height: 32px; border-radius: 3px; color: #787b86; opacity: 0; }
 .drawing-tool-slot:hover > .drawing-group-expand, .drawing-tool-slot:has(> :focus-visible) > .drawing-group-expand { opacity: 1; }
-.drawing-group-expand .drawing-icon { width: 11px; height: 15px; }
+.drawing-group-expand .drawing-icon { width: 12px; height: 16px; }
 .drawing-group-expand[aria-expanded=true] { color: #f0f3fa; background: #363a45; }
 .drawing-rail-divider { height: 1px; width: 28px; margin: 5px 0; flex-shrink: 0; background: #2a2e39; }
 .drawing-mode-badge { position: absolute; bottom: 0; right: 0; padding: 0 2px; border-radius: 2px; background: #2962ff; color: #fff; font-size: 8px; line-height: 12px; }
@@ -16,7 +16,7 @@
 .drawing-menu-heading { color: #9598a1; font-size: 11px; line-height: 18px; padding: 10px 16px 6px; }
 .drawing-menu-heading:not(:first-child) { margin-top: 6px; border-top: 1px solid #363a45; padding-top: 12px; }
 .drawing-menu-item { display: flex; width: 100%; align-items: center; min-height: 38px; gap: 14px; padding: 7px 16px; text-align: left; color: #d1d4dc; font-size: 13px; line-height: 20px; }
-.drawing-menu-item .drawing-icon { width: 23px; height: 23px; color: #b2b5be; }
+.drawing-menu-item .drawing-icon { width: 24px; height: 24px; color: #b2b5be; }
 .drawing-menu-item:hover, .drawing-menu-item:focus-visible { background: #2a2e39; }
 .drawing-menu-item[aria-checked=true] { background: #2962ff1f; color: #79a4ff; }
 .drawing-menu-item[aria-checked=true] .drawing-icon { color: #79a4ff; }
@@ -36,6 +36,7 @@
 .drawing-button:hover, .drawing-button[aria-pressed=true] { background: #303c68; color: #b6c7ff; }
 .drawing-button:disabled { opacity: .4; cursor: default; }
 .drawing-tool-grid .drawing-button { display: flex; align-items: center; gap: 10px; white-space: normal; text-align: left; }
+.drawing-tool-grid .drawing-icon { width: 24px; height: 24px; }
 .drawing-hint { position: absolute; z-index: 4; bottom: 38px; left: 10px; max-width: calc(100% - 100px); border-radius: 5px; padding: 8px 12px; background: #273862ed; color: #dce6ff; font-size: 12px; pointer-events: none; }
 .drawing-save-status { position: absolute; z-index: 4; top: calc(var(--main-pane-top, 0px) + 38px); right: calc(var(--price-scale-width, 84px) + 12px); max-width: calc(100% - 110px); color: #868fa6; font-size: 10px; pointer-events: none; text-align: right; }
 .drawing-save-status.error { color: #ffba7a; background: #3e2825; padding: 5px 8px; border-radius: 5px; font-size: 12px; pointer-events: auto; }

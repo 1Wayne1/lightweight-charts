@@ -55,6 +55,12 @@ export class VerticalLineDrawing extends BaseDrawing {
 		this._priceAxisViews.forEach(v => v.update(null, '', false, this._options.color));
 	}
 
+	public override anchorHandlePoints(_width: number, height: number): readonly (ScreenPoint | null)[] {
+		const p1 = this._screenPoints[0];
+		if (!p1) return [];
+		return [{ x: p1.x, y: Math.max(24, Math.min(height - 24, height * 0.5)) }];
+	}
+
 	protected hitTestBody(point: ScreenPoint, hitSlop: number = 0): BodyHitResult | null {
 		const p1 = this._screenPoints[0];
 		if (!p1) return null;

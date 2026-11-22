@@ -115,29 +115,49 @@ export function applyCanvasLineStyle(
 	}
 }
 
+const HANDLE_ACCENT = '#2962FF';
+const HANDLE_LOCKED_ACCENT = '#6C8CE8';
+
 export function drawAnchorHandles(
 	target: CanvasRenderingTarget2D,
 	points: readonly (ScreenPoint | null)[],
-	color: string,
+	_color: string,
 	hoveredIndex: number | null,
 	locked: boolean
 ): void {
 	target.useMediaCoordinateSpace(scope => {
 		const ctx = scope.context;
 		ctx.save();
+		ctx.setLineDash([]);
 		for (let i = 0; i < points.length; i++) {
 			const pt = points[i];
 			if (!pt) continue;
 			const isHovered = hoveredIndex === i;
-			const radius = isHovered ? 6 : 4.5;
+			const size = isHovered ? 12 : 10;
+			const half = size / 2;
+			const corner = isHovered ? 4 : 3.5;
+			const stroke = locked ? HANDLE_LOCKED_ACCENT : HANDLE_ACCENT;
+
+			// Soft TradingView-style blue focus halo for clear hover/selection distinction
+			ctx.beginPath();
+			if (typeof ctx.roundRect === 'function') {
+				ctx.roundRect(pt.x - half - 2.5, pt.y - half - 2.5, size + 5, size + 5, corner + 2);
+			} else {
+				ctx.arc(pt.x, pt.y, half + 2.5, 0, Math.PI * 2);
+			}
+			ctx.fillStyle = isHovered ? 'rgba(41, 98, 255, 0.32)' : 'rgba(41, 98, 255, 0.18)';
+			ctx.fill();
 
 			ctx.beginPath();
-			ctx.arc(pt.x, pt.y, radius, 0, Math.PI * 2);
-			ctx.fillStyle = locked ? '#787B86' : '#FFFFFF';
+			if (typeof ctx.roundRect === 'function') {
+				ctx.roundRect(pt.x - half, pt.y - half, size, size, corner);
+			} else {
+				ctx.arc(pt.x, pt.y, half, 0, Math.PI * 2);
+			}
+			ctx.fillStyle = locked ? '#1E222D' : '#0C0D10';
 			ctx.fill();
-			ctx.lineWidth = isHovered ? 2.5 : 2;
-			ctx.strokeStyle = locked ? '#434651' : color;
-			ctx.setLineDash([]);
+			ctx.lineWidth = isHovered ? 2.6 : 2.2;
+			ctx.strokeStyle = stroke;
 			ctx.stroke();
 		}
 		ctx.restore();
@@ -158,9 +178,13 @@ class DrawingPaneView implements IPrimitivePaneView {
 				this._source.draw(target, utils);
 				this._source.drawAttachedText(target);
 				if (this._source.shouldDrawAnchors()) {
+					let handlePoints: readonly (ScreenPoint | null)[] = this._source.screenPoints();
+					target.useMediaCoordinateSpace(({ mediaSize }) => {
+						handlePoints = this._source.anchorHandlePoints(mediaSize.width, mediaSize.height);
+					});
 					drawAnchorHandles(
 						target,
-						this._source.screenPoints(),
+						handlePoints,
 						this._source.options().color,
 						this._source.hoveredAnchorIndex(),
 						this._source.options().locked
@@ -308,6 +332,11 @@ export abstract class BaseDrawing extends PluginBase {
 		return this._selected || this._hovered || this._isPreview;
 	}
 
+	/** Screen coordinates where hover/selection anchor handles should be rendered. */
+	public anchorHandlePoints(_width: number, _height: number): readonly (ScreenPoint | null)[] {
+		return this._screenPoints;
+	}
+
 	public serialize(): SerializedDrawing {
 		return {
 			id: this.id,
@@ -421,10 +450,18 @@ export abstract class BaseDrawing extends PluginBase {
 
 		// 1. Anchors take highest priority when drawing is selected or hovered
 		if (this._selected || this._hovered) {
+			const chart = this.chartOrNull();
+			const series = this.seriesOrNull();
+			const candidatePoints = chart && series
+				? this.anchorHandlePoints(chart.timeScale().width(), series.getPane().getHeight())
+				: this._screenPoints;
+			const anchorPoints = candidatePoints.length === this._screenPoints.length
+				? candidatePoints
+				: this._screenPoints;
 			let bestAnchorIdx = -1;
 			let bestAnchorDist = Infinity;
-			for (let i = 0; i < this._screenPoints.length; i++) {
-				const sp = this._screenPoints[i];
+			for (let i = 0; i < anchorPoints.length; i++) {
+				const sp = anchorPoints[i];
 				if (!sp) continue;
 				const dist = distancePointToPoint(point, sp);
 				if (dist <= ANCHOR_HIT_RADIUS + hitSlop && dist < bestAnchorDist) {
@@ -442,13 +479,13 @@ export abstract class BaseDrawing extends PluginBase {
 					zOrder: this._options.zOrder,
 					distance: bestAnchorDist,
 					hitTestPriority: 2,
-					cursorStyle: this._options.locked ? 'default' : 'pointer',
+					cursorStyle: 'pointer',
 				};
 			}
 		}
 
 		// 2. Body hit test delegated to concrete tool
-		const bodyHit = this.textTargetAt(point) ? { distance: 0, priority: 1, cursorStyle: 'text' } : this.hitTestBody(point, hitSlop);
+		const bodyHit = this.textTargetAt(point) ? { distance: 0, priority: 1, cursorStyle: 'pointer' } : this.hitTestBody(point, hitSlop);
 		if (!bodyHit) {
 			return null;
 		}
@@ -460,9 +497,7 @@ export abstract class BaseDrawing extends PluginBase {
 			zOrder: this._options.zOrder,
 			distance: bodyHit.distance,
 			hitTestPriority: bodyHit.priority,
-			cursorStyle: this._options.locked
-				? 'default'
-				: (bodyHit.cursorStyle ?? 'grab'),
+			cursorStyle: 'pointer',
 		};
 	}
 

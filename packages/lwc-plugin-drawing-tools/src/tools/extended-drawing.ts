@@ -17,8 +17,13 @@ export class ExtendedDrawing extends BaseDrawing {
 		super(id, points, options); this.type = type;
 	}
 	public setDataSource(source: () => readonly DrawingBar[]): void { this._bars = source; }
-	public shouldDrawAnchors(): boolean {
-		return this.type !== 'brush' && this.type !== 'highlighter' && super.shouldDrawAnchors();
+	public override anchorHandlePoints(_width: number, _height: number): readonly (ScreenPoint | null)[] {
+		if (this.type === 'brush' || this.type === 'highlighter') {
+			const first = this._screenPoints[0] ?? null;
+			const last = this._screenPoints.length > 1 ? (this._screenPoints[this._screenPoints.length - 1] ?? null) : null;
+			return last ? [first, last] : (first ? [first] : []);
+		}
+		return this._screenPoints;
 	}
 	public draw(target: CanvasRenderingTarget2D): void {
 		const series = this.seriesOrNull(); const chart = this.chartOrNull();

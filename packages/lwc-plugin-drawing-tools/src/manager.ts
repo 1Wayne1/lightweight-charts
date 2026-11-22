@@ -112,6 +112,7 @@ export class DrawingManager {
 
 	private _activeTool: DrawingToolType | null = null;
 	private _selectedId: string | null = null;
+	private _hoveredId: string | null = null;
 	private _magnetMode: MagnetMode;
 	private _drawingsVisible: boolean = true;
 	private _stayInDrawingMode: boolean;
@@ -274,6 +275,8 @@ export class DrawingManager {
 		}
 		if (!visible) {
 			this._setSelectedInternal(null);
+			this._hoveredId = null;
+			this._updatePaneCursor();
 		}
 		this._emitState();
 	}
@@ -357,6 +360,10 @@ export class DrawingManager {
 		if (this._selectedId === id) {
 			this._selectedId = null;
 		}
+		if (this._hoveredId === id) {
+			this._hoveredId = null;
+			this._updatePaneCursor();
+		}
 		this._emitState();
 		return true;
 	}
@@ -369,6 +376,8 @@ export class DrawingManager {
 		this._cancelDraft();
 		this._detachAllInternal();
 		this._selectedId = null;
+		this._hoveredId = null;
+		this._updatePaneCursor();
 		this._emitState();
 	}
 
@@ -679,7 +688,15 @@ export class DrawingManager {
 	private _updatePaneCursor(): void {
 		const paneEl = paneContentElement(this._series.getPane());
 		if (!paneEl) return;
-		paneEl.style.cursor = this._activeTool !== null ? 'crosshair' : '';
+		if (this._activeTool !== null) {
+			paneEl.style.cursor = 'crosshair';
+		} else if (this._drag !== null && this._drag.didMove) {
+			paneEl.style.cursor = 'grabbing';
+		} else if (this._hoveredId !== null) {
+			paneEl.style.cursor = 'pointer';
+		} else {
+			paneEl.style.cursor = '';
+		}
 	}
 
 	private _hitTestAll(
@@ -857,7 +874,10 @@ export class DrawingManager {
 				);
 				if (nextAnchor) {
 					drawing.setPoint(anchorIndex, this._normalize(nextAnchor));
-					this._drag.didMove = true;
+					if (!this._drag.didMove) {
+						this._drag.didMove = true;
+						this._updatePaneCursor();
+					}
 				}
 			} else {
 				const curLogical = this._chart.timeScale().coordinateToLogical(pt.x);
@@ -874,7 +894,10 @@ export class DrawingManager {
 							const point = anchorToScreen(this._chart, this._series, drawing.points()[0]);
 							if (point) drawing.applyOptions({ anchorX: point.x / this._chart.timeScale().width(), anchorY: point.y / this._series.getPane().getHeight() });
 						}
-						this._drag.didMove = true;
+						if (!this._drag.didMove) {
+							this._drag.didMove = true;
+							this._updatePaneCursor();
+						}
 					}
 				}
 			}
@@ -926,6 +949,7 @@ export class DrawingManager {
 		if (this._activeTool === null && this._drawings.length > 0) {
 			const pt = this._panePoint(event.clientX, event.clientY);
 			const best = pt ? this._hitTestAll(pt.x, pt.y) : null;
+			const nextHoveredId = best ? best.drawing.id : null;
 			for (const drawing of this._drawings) {
 				if (best && best.drawing === drawing) {
 					drawing.setHoverState(
@@ -936,6 +960,13 @@ export class DrawingManager {
 					drawing.setHoverState(false, null);
 				}
 			}
+			if (this._hoveredId !== nextHoveredId) {
+				this._hoveredId = nextHoveredId;
+				this._updatePaneCursor();
+			}
+		} else if (this._hoveredId !== null) {
+			this._hoveredId = null;
+			this._updatePaneCursor();
 		}
 	}
 
@@ -969,6 +1000,7 @@ export class DrawingManager {
 		const session = this._drag;
 		this._drag = null;
 		this._restoreControls();
+		this._updatePaneCursor();
 
 		if (!commit) { session.drawing.setPoints(session.origPoints); session.drawing.applyOptions(session.origOptions); }
 		if (commit && session.didMove) {
