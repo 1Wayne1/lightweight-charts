@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>crypto-terminal</Name>
+  <Repository>crypto-terminal:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/1Wayne1/lightweight-charts</Support>
+  <Project>https://github.com/1Wayne1/lightweight-charts</Project>
+  <Overview>多端加密货币看盘工作台（Lightweight Charts + 画线工具 + 单人 SQLite 同步 + 内置 Binance REST/WS 行情中继）。手机与电脑连接本容器后，K 线行情与画线均由服务端统一提供。</Overview>
+  <Category>Tools: Productivity:</Category>
+  <WebUI>http://[IP]:[PORT:8080]</WebUI>
+  <TemplateURL/>
+  <Icon>https://raw.githubusercontent.com/1Wayne1/lightweight-charts/codex/feature-multi-platform-terminal/apps/terminal-web/public/apple-touch-icon.png</Icon>
+  <ExtraParams>--init --user 99:100 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=128m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>首次使用前需在 Unraid 终端构建本地镜像 crypto-terminal:latest（或修改 Repository 为你自己的私有镜像地址）。</Requires>
+  <Config Name="WebUI &amp; API 端口" Target="8080" Default="8080" Mode="tcp" Description="看盘网页、SQLite 同步 API 与行情中继统一端口" Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="SQLite 数据目录" Target="/data" Default="/mnt/user/appdata/crypto-terminal" Mode="rw" Description="存放单文件数据库 terminal.db；如 Unraid 配置了缓存盘，建议改为 /mnt/cache/appdata/crypto-terminal 以获得更稳定的 SQLite WAL 性能" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/crypto-terminal</Config>
+  <Config Name="访问口令 (SYNC_TOKEN)" Target="SYNC_TOKEN" Default="" Mode="" Description="必填：至少 8 位随机口令，保护同步 API、SQLite 备份与行情中继（可用 openssl rand -hex 24 生成）" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="上游行情代理 (MARKET_PROXY_URL)" Target="MARKET_PROXY_URL" Default="" Mode="" Description="可选：服务端请求 Binance 时使用的 HTTP(S) 代理（如 http://192.168.1.2:7890）；海外服务器或已配置透明代理时留空" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="允许跨域来源 (CORS_ORIGIN)" Target="CORS_ORIGIN" Default="*" Mode="" Description="跨源访问控制，默认 *；公网反代可收紧为你的域名（如 https://charts.example.com）" Type="Variable" Display="advanced" Required="false" Mask="false">*</Config>
+  <Config Name="自定义 Binance 现货 REST" Target="BINANCE_SPOT_REST" Default="" Mode="" Description="可选：覆盖服务端默认的现货 REST 地址，留空使用官方默认" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="自定义 Binance 永续 REST" Target="BINANCE_PERPETUAL_REST" Default="" Mode="" Description="可选：覆盖服务端默认的 USDT 永续 REST 地址，留空使用官方默认" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="自定义 Binance 现货 WS" Target="BINANCE_SPOT_WS" Default="" Mode="" Description="可选：覆盖服务端默认的现货 WebSocket 地址，留空使用官方默认" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="自定义 Binance 永续 WS" Target="BINANCE_PERPETUAL_WS" Default="" Mode="" Description="可选：覆盖服务端默认的 USDT 永续 WebSocket 地址，留空使用官方默认" Type="Variable" Display="advanced" Required="false" Mask="false"/>
+</Container>

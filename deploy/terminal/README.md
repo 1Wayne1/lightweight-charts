@@ -26,6 +26,57 @@ curl http://127.0.0.1:8080/v1/capabilities
 
 > 公网服务器部署时，建议保持 `SYNC_BIND=127.0.0.1`，外层使用 Caddy / Nginx 等反向代理提供 HTTPS；仅在受信任的家庭局域网直连（例如手机 Safari 访问电脑）时可改为 `SYNC_BIND=0.0.0.0`。若 Linux 宿主机出现 `./data` 权限不足，执行 `chown -R 1000:1000 deploy/terminal/data`。
 
+## 使用 `docker run` 部署（含 Unraid 模板）
+
+### 1. 构建镜像
+
+在服务器（如 Unraid 终端）拉取仓库并在仓库根目录构建镜像：
+
+```bash
+docker build -f services/sync-api/Dockerfile -t crypto-terminal:latest .
+```
+
+> 若在 Apple Silicon Mac 上构建镜像再导入 x86_64 Unraid，可使用：
+> `docker buildx build --platform linux/amd64 -f services/sync-api/Dockerfile -t crypto-terminal:latest --output type=docker,dest=crypto-terminal.tar .`
+> 传到 Unraid 后执行 `docker load -i crypto-terminal.tar`。
+
+### 2. 直接使用 `docker run` 启动
+
+```bash
+mkdir -p /mnt/user/appdata/crypto-terminal
+chown -R 99:100 /mnt/user/appdata/crypto-terminal
+
+docker run -d \
+  --name crypto-terminal \
+  --restart unless-stopped \
+  --init \
+  --user 99:100 \
+  --read-only \
+  --tmpfs /tmp:rw,noexec,nosuid,size=128m,mode=1777 \
+  --cap-drop ALL \
+  --security-opt no-new-privileges:true \
+  -p 8080:8080 \
+  -v /mnt/user/appdata/crypto-terminal:/data \
+  -e SYNC_TOKEN="请替换为至少8位随机口令" \
+  -e CORS_ORIGIN="*" \
+  -e MARKET_PROXY_URL="" \
+  crypto-terminal:latest
+```
+
+> - 若在普通 Linux 服务器上运行，可将 `--user 99:100` 改为 `--user 1000:1000` 并把挂载目录改为宿主机目录（如 `./data:/data`）。
+> - Unraid 若配置了独立缓存盘，建议将挂载路径改为 `/mnt/cache/appdata/crypto-terminal:/data`（或把 `appdata` 设为 Exclusive Share），可避免 FUSE 层对 SQLite WAL 文件锁的影响。
+> - 如果 Unraid 所在网络需要代理才能连 Binance，把 `MARKET_PROXY_URL` 填为局域网或旁路由 HTTP 代理（如 `http://192.168.1.2:7890`）；海外服务器或已有透明代理时留空即可。
+
+### 3. 导入 Unraid Docker 图形化模板
+
+仓库已内置 Unraid 模板文件 `deploy/terminal/unraid/my-crypto-terminal.xml`，复制到 Unraid 模板目录即可在 WebUI 图形化管理：
+
+```bash
+cp deploy/terminal/unraid/my-crypto-terminal.xml /boot/config/plugins/dockerMan/templates-user/my-crypto-terminal.xml
+```
+
+复制后打开 Unraid WebUI → **Docker** → **Add Container** → 在顶部 **Template** 下拉列表选择 **`crypto-terminal`**，填入 `SYNC_TOKEN`（以及可选的 `MARKET_PROXY_URL`）点击 **Apply** 即可启动。
+
 ## 手机通过电脑或服务器查看 K 线与画线（内置行情中继）
 
 一体化服务默认内置 **Binance REST + WebSocket 行情中继**（`/v1/market/binance/*`），前端默认采用「通过当前服务转发」，因此手机打开电脑或服务器地址时，**K 线和画线均由所连服务端发出，手机不需要单独开代理**：
