@@ -23,6 +23,10 @@ export function setWatchlistInstruments(next: readonly Instrument[]): void {
 	instruments.splice(0, instruments.length, ...next.map(item => ({ ...item })));
 }
 const tickSizes = new Map<string, number>();
+export function replaceCatalogue(items: InstrumentInfo[]): void {
+	catalogue.splice(0, catalogue.length);
+	registerInstruments(items);
+}
 export function registerInstruments(items: InstrumentInfo[]): void {
 	for (const { instrument, tickSize } of items) {
 		tickSizes.set(instrumentKey(instrument), tickSize);

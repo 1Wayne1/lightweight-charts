@@ -20,7 +20,7 @@ interface MobileOptions {
 	openSearch(): void;
 	openDrawings(): void;
 	openDrawingObjects(): void;
-	openSync(): void;
+	openSettings(tab?: 'data-source' | 'storage' | 'backup'): void;
 	drawingHistory(): { canUndo: boolean; canRedo: boolean; undo(): void; redo(): void };
 	setTimeframe(timeframe: Timeframe): void;
 	setRange(seconds: number): void;
@@ -57,12 +57,16 @@ export function createMobileUI(options: MobileOptions) {
 		renderedSymbols = '';
 		renderQuotes();
 	};
-	watchHeaderActions.append(watchEditBtn, iconButton('search', '搜索自选交易对', () => options.openSearch()));
+	watchHeaderActions.append(
+		watchEditBtn,
+		iconButton('search', '搜索自选交易对', () => options.openSearch()),
+		iconButton('settings', '打开设置', () => options.openSettings('data-source')),
+	);
 	watchHeader.append(watchBrand, watchHeaderActions);
 	const watchTitle = element('div', 'mobile-watch-title');
 	const heading = element('h1');
 	heading.append(element('span', 'flag'), document.createTextNode('自选表'));
-	const quoteStatus = element('span', 'mobile-demo-tag', 'Binance · 连接中');
+	const quoteStatus = element('span', 'mobile-demo-tag', '行情 · 连接中');
 	watchTitle.append(heading, quoteStatus);
 	const watchRows = element('div', 'mobile-watch-rows');
 	watchPage.append(watchHeader, watchTitle, watchRows);
@@ -560,16 +564,17 @@ export function createMobileUI(options: MobileOptions) {
 		const search = element('button', 'sheet-action', '搜索交易对');
 		search.type = 'button';
 		search.onclick = () => { closeSheetAnimated(true); options.openSearch(); };
-		const syncBtn = element('button', 'sheet-action', `云同步与数据迁移（${syncLabel}）`);
-		syncBtn.type = 'button';
-		syncBtn.onclick = () => { closeSheetAnimated(true); options.openSync(); };
-		sheetBody.append(syncBtn, objects, undo, redo, fit, search, element('p', 'mobile-sheet-note', `Binance 现货 / USDT 永续 · 本机保存 · ${syncLabel}`));
+		const settingsBtn = element('button', 'sheet-action', `设置（${dataSourceLabel} · ${syncLabel}）`);
+		settingsBtn.type = 'button';
+		settingsBtn.onclick = () => { closeSheetAnimated(true); options.openSettings('data-source'); };
+		sheetBody.append(settingsBtn, objects, undo, redo, fit, search, element('p', 'mobile-sheet-note', `当前默认数据源：${dataSourceLabel} · ${syncLabel}`));
 	}
 
 	const rowPrices = new Map<string, { price: HTMLElement; change: HTMLElement }>();
 	let renderedSymbols = '';
 	let connectionText = '连接中';
-	let syncLabel = '云同步未启用';
+	let dataSourceLabel = 'Binance';
+	let syncLabel = '仅浏览器缓存';
 	function renderQuotes(): void {
 		const signature = `${watchEditMode ? 'edit' : 'view'}:${instruments.map(instrumentKey).join(',')}`;
 		if (signature !== renderedSymbols || (instruments.length === 0 && watchRows.childElementCount === 0)) {
@@ -712,10 +717,12 @@ export function createMobileUI(options: MobileOptions) {
 
 	return {
 		isMobile: () => media.matches,
-		setConnection(state: ConnectionState, message: string) {
-			connectionText = state === 'live' ? 'Binance 实时' : message;
+		setConnection(state: ConnectionState, message: string, sourceLabel?: string) {
+			const label = sourceLabel ?? dataSourceLabel;
+			connectionText = state === 'live' ? `${label} ${message}` : message;
 			renderQuotes();
 		},
+		setDataSourceLabel(label: string) { dataSourceLabel = label; },
 		setQuoteStatus(message: string) { quoteStatus.textContent = message; },
 		setSyncStatus(message: string) { syncLabel = message; },
 		refreshWatchlist() {

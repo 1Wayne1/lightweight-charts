@@ -117,6 +117,7 @@
   },
   "scripts": {
     "dev:terminal": "pnpm --filter @terminal/web dev",
+    "start:terminal": "cross-env SYNC_AUTH_MODE=local pnpm --filter @terminal/sync-api start",
     "dev:sync": "pnpm --filter @terminal/sync-api dev",
     "build:terminal": "pnpm build:prod && pnpm build:drawings && pnpm --filter @terminal/web build",
     "typecheck:terminal": "pnpm --filter @tradingview/lwc-plugin-drawing-tools --filter @terminal/domain --filter @terminal/web typecheck",

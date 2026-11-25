@@ -26,9 +26,39 @@ curl http://127.0.0.1:8080/v1/capabilities
 
 > 公网服务器部署时，建议保持 `SYNC_BIND=127.0.0.1`，外层使用 Caddy / Nginx 等反向代理提供 HTTPS；仅在受信任的家庭局域网直连（例如手机 Safari 访问电脑）时可改为 `SYNC_BIND=0.0.0.0`。若 Linux 宿主机出现 `./data` 权限不足，执行 `chown -R 1000:1000 deploy/terminal/data`。
 
-## 本地开发运行同步服务（不依赖 Docker）
+## 手机通过电脑或服务器查看 K 线与画线（内置行情中继）
 
-只要配置过 `deploy/terminal/.env`（填入 `SYNC_TOKEN`），直接运行即可自动读取该 `.env` 并把数据库存在 `deploy/terminal/data/terminal.db`（与 Docker 共用同一份配置和数据）：
+一体化服务默认内置 **Binance REST + WebSocket 行情中继**（`/v1/market/binance/*`），前端默认采用「通过当前服务转发」，因此手机打开电脑或服务器地址时，**K 线和画线均由所连服务端发出，手机不需要单独开代理**：
+
+- **场景 A：海外 Docker 服务器（HTTPS）**
+  - 按上方步骤启动容器即可，服务端直接访问 Binance 公开行情；手机打开你的 HTTPS 域名并在「设置 → 存储服务」填入 `SYNC_TOKEN` 后，画线与 K 线均由服务器提供。
+- **场景 B：家里电脑 + 手机局域网看盘（复用电脑代理，如 Clash 7890）**
+  - 在 `deploy/terminal/.env` 配置：
+
+    ```bash
+    SYNC_TOKEN=你的随机口令（至少8位）
+    SYNC_BIND=0.0.0.0
+    SYNC_PORT=8080
+    MARKET_PROXY_URL=http://127.0.0.1:7890
+    ```
+
+  - 在仓库根目录运行 `pnpm --filter @terminal/sync-api start`（或 Docker 启动），手机浏览器访问 `http://<电脑局域网IP>:8080`，在「设置 → 存储服务」填入同一 `SYNC_TOKEN` 即可免代理看盘并同步画线。
+
+## 本机单服务直接运行（不依赖 Docker，默认启用本机存储）
+
+无需配置 `.env` 或单独启动存储服务，在仓库根目录任选以下一条命令即可同时启动前端界面和本机 SQLite 存储（默认数据文件仍为 `deploy/terminal/data/terminal.db`，与 Docker 完全共用）：
+
+```bash
+# 方式 A：开发模式（热更新 + 内嵌本机 SQLite，访问 http://127.0.0.1:5173）
+pnpm dev:terminal
+
+# 方式 B：生产静态构建 + 内嵌本机 SQLite（先执行一次 pnpm build:terminal，访问 http://127.0.0.1:8080）
+pnpm start:terminal
+```
+
+打开页面后会自动连接本机内置 SQLite 存储，无需填写服务地址或访问口令；如需连接远程 Docker 同步服务或导出备份，进入界面「设置 → 存储服务 / 数据导入导出」即可切换。
+
+如需单独以口令保护模式运行同步服务（例如供局域网手机连接），可配置 `deploy/terminal/.env`（填入 `SYNC_TOKEN`）后执行：
 
 ```bash
 pnpm dev:sync
@@ -40,7 +70,7 @@ pnpm dev:sync
 SYNC_TOKEN=your-local-dev-token DB_PATH=./deploy/terminal/data/terminal.db pnpm dev:sync
 ```
 
-然后在 Vite 开发页面（`pnpm dev:terminal`）的同步弹窗中将服务地址设为 `http://127.0.0.1:8080`（手机端填电脑局域网 IP）并填入同一口令即可联调。
+然后在页面「设置 → 存储服务 → 自定义远程存储服务」中填入服务地址（如 `http://127.0.0.1:8080` 或局域网 IP）和同一口令即可联调。
 
 ## 服务器关机 ↔ 迁回电脑使用
 

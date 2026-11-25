@@ -2,6 +2,9 @@ import { TIMEFRAME_SECONDS, type Candle, type CandleEvent, type CandleQuery, typ
 import { MarketDataError } from './binance';
 
 interface CandleSource extends MarketDataProvider {
+	readonly label?: string;
+	readonly maxCandleLimit?: number;
+	readonly realtime?: boolean;
 	subscribeCandles(instrument: Instrument, timeframe: Timeframe, observer: StreamObserver<CandleEvent>): () => void;
 }
 interface FeedObserver {
@@ -20,6 +23,9 @@ export function mergeCandles(previous: Candle[], incoming: Candle[]): Candle[] {
 }
 export function startCandleFeed(source: CandleSource, instrument: Instrument, timeframe: Timeframe, observer: FeedObserver) {
 	const controller = new AbortController();
+	const sourceLabel = source.label ?? 'Binance';
+	const pageLimit = source.maxCandleLimit ?? 500;
+	const liveLabel = source.realtime === false ? '轮询更新' : '实时';
 	const step = TIMEFRAME_SECONDS[timeframe];
 	const minStep = timeframe === '1M' ? 28 * 86400 : step;
 	const maxStep = timeframe === '1M' ? 31 * 86400 : step;
@@ -27,7 +33,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 	let pending: CandleEvent[] = [];
 	let syncing = false;
 	let needsSync = true;
-	let streamActive = false;
+	let streamActive = source.realtime === false;
 	let eventTime = 0;
 	let retry: ReturnType<typeof setTimeout> | undefined;
 	let failures = 0;
@@ -44,7 +50,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 		needsSync = true;
 		clearTimeout(retry);
 		retry = undefined;
-		status('syncing', data.length ? '正在补齐行情' : '正在加载 Binance 行情');
+		status('syncing', data.length ? '正在补齐行情' : `正在加载 ${sourceLabel} 行情`);
 		try {
 			const initial = data.length === 0;
 			let after = data.at(-1)?.time;
@@ -55,7 +61,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 				const page = await source.getCandles(instrument, timeframe, controller.signal, query);
 				if (!alive()) return;
 				batch = mergeCandles(batch, page);
-				if (initial || page.length < 500) break;
+				if (initial || page.length < pageLimit) break;
 				const next = (page.at(-1)?.time ?? 0) + minStep;
 				if (after !== undefined && next <= after) throw new Error('历史行情未向前推进');
 				after = next;
@@ -68,22 +74,25 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 			failures = 0;
 			retryAt = 0;
 			observer.onSnapshot(data, initial);
-			status(streamActive ? 'live' : 'reconnecting', streamActive ? '实时' : '历史行情已加载，等待实时连接');
+			status(streamActive ? 'live' : 'reconnecting', streamActive ? liveLabel : '历史行情已加载，等待实时连接');
 		} catch (error) {
 			if (!alive()) return;
-			const message = error instanceof Error ? error.message : '无法连接 Binance';
-			status('error', `${message}，自动重试中`);
+			const message = error instanceof Error ? error.message : `无法连接 ${sourceLabel}`;
+			const isBan = error instanceof MarketDataError && error.isIpBan;
+			status('error', isBan ? message : `${message}，自动重试中`);
 			const delay = Math.max(error instanceof MarketDataError ? error.retryAfterMs : 0, Math.min(30000, 1000 * 2 ** Math.min(failures++, 5)));
 			retryAt = Date.now() + delay;
 			retry = setTimeout(() => { void snapshot(); }, delay);
 		} finally { syncing = false; }
 	}
 	const stop = source.subscribeCandles(instrument, timeframe, {
-		onOpen: () => { needsSync = true; void snapshot(); },
+		onOpen: () => {
+			if (needsSync || !data.length) void snapshot();
+		},
 		onState: (state, message) => {
 			streamActive = false;
 			needsSync = true;
-			status(state, message ?? '正在连接 Binance');
+			status(state, message ?? `正在连接 ${sourceLabel}`);
 		},
 		onData: event => {
 			if (!alive() || event.eventTime < eventTime) return;
@@ -100,7 +109,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 			if (event.candle.time === last.time) data[data.length - 1] = event.candle;
 			else data.push(event.candle);
 			observer.onCandle(event.candle, data.length);
-			status('live', '实时');
+			status('live', liveLabel);
 		},
 	});
 	void snapshot();
@@ -112,7 +121,7 @@ export function startCandleFeed(source: CandleSource, instrument: Instrument, ti
 			try {
 				const older = (await source.getCandles(instrument, timeframe, controller.signal, { before })).filter(c => c.time < before);
 				if (!alive()) return;
-				oldestReached = older.length < 500;
+				oldestReached = older.length < pageLimit;
 				if (older.length) {
 					data = mergeCandles(older, data);
 					observer.onSnapshot(data, false);

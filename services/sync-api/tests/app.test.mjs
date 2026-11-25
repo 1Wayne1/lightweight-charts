@@ -5,7 +5,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createApp } from '../src/app.mjs';
+import { WebSocket, WebSocketServer } from 'ws';
+import { createApp, createSyncRequestHandler } from '../src/app.mjs';
+import { createMarketRelay } from '../src/market-relay.mjs';
 import { openStore } from '../src/store.mjs';
 
 const TEST_TOKEN = 'test-secret-token-12345';
@@ -14,7 +16,14 @@ async function startServer(t, options = {}) {
 	const tempDir = mkdtempSync(join(tmpdir(), 'terminal-sync-test-'));
 	const dbPath = options.dbPath ?? join(tempDir, 'terminal.db');
 	const store = openStore(dbPath);
-	const app = createApp({ store, token: options.token ?? TEST_TOKEN, staticDir: options.staticDir });
+	const authMode = options.authMode ?? 'token';
+	const app = createApp({
+		store,
+		authMode,
+		token: authMode === 'token' ? (options.token ?? TEST_TOKEN) : undefined,
+		staticDir: options.staticDir,
+		marketRelay: options.marketRelay,
+	});
 	t.after(async () => {
 		await new Promise((resolve, reject) => app.close(error => error ? reject(error) : resolve()));
 		store.close();
@@ -54,6 +63,7 @@ test('health, readiness, capabilities and token authentication enforcement', asy
 		sync: true,
 		backup: true,
 		staticWeb: false,
+		marketRelay: { enabled: true, binance: true },
 	});
 
 	// Protected routes reject missing or wrong Bearer token.
@@ -256,4 +266,230 @@ test('staticDir serves single-container web bundle safely without path traversal
 
 	const traversal = await fetch(`${baseUrl}/..%2F..%2Fetc%2Fpasswd`);
 	assert.equal(traversal.status, 404);
+});
+
+test('local auth mode allows same-origin loopback without token and blocks cross-origin, proxied, or headerless requests', async t => {
+	const { baseUrl, store } = await startServer(t, { authMode: 'local' });
+
+	const capsRes = await fetch(`${baseUrl}/v1/capabilities`);
+	assert.equal(capsRes.status, 200);
+	assert.equal(capsRes.headers.get('access-control-allow-origin'), null);
+	const caps = await capsRes.json();
+	assert.equal(caps.authentication, 'local');
+	assert.equal(caps.storeId, store.storeId);
+
+	// Missing X-Terminal-Local header is rejected.
+	assert.equal((await fetch(`${baseUrl}/v1/snapshot`)).status, 403);
+
+	// Cross-origin Origin header is rejected even with X-Terminal-Local.
+	assert.equal((await fetch(`${baseUrl}/v1/snapshot`, {
+		headers: { 'X-Terminal-Local': '1', 'Origin': 'https://evil.example' },
+	})).status, 403);
+
+	// Cross-site Sec-Fetch-Site is rejected.
+	assert.equal((await fetch(`${baseUrl}/v1/snapshot`, {
+		headers: { 'X-Terminal-Local': '1', 'Sec-Fetch-Site': 'cross-site' },
+	})).status, 403);
+
+	// Proxied X-Forwarded-For request is rejected.
+	assert.equal((await fetch(`${baseUrl}/v1/snapshot`, {
+		headers: { 'X-Terminal-Local': '1', 'X-Forwarded-For': '203.0.113.10' },
+	})).status, 403);
+
+	// Same-origin loopback with X-Terminal-Local succeeds for read, write, and SQLite backup.
+	const snapRes = await fetch(`${baseUrl}/v1/snapshot`, {
+		headers: { 'X-Terminal-Local': '1', 'Origin': baseUrl, 'Sec-Fetch-Site': 'same-origin' },
+	});
+	assert.equal(snapRes.status, 200);
+
+	const putRes = await fetch(`${baseUrl}/v1/instruments/${encodeURIComponent('custom:spot:BTC-USDT')}/preferences`, {
+		method: 'PUT',
+		headers: { 'X-Terminal-Local': '1', 'Content-Type': 'application/json', 'Origin': baseUrl },
+		body: JSON.stringify({ mutationId: randomUUID(), deviceId: randomUUID(), baseRevision: 0, timeframe: '4h' }),
+	});
+	assert.equal(putRes.status, 200);
+	assert.equal((await putRes.json()).timeframe, '4h');
+
+	const backupRes = await fetch(`${baseUrl}/v1/backup/sqlite`, {
+		headers: { 'X-Terminal-Local': '1' },
+	});
+	assert.equal(backupRes.status, 200);
+	assert.equal(backupRes.headers.get('content-type'), 'application/vnd.sqlite3');
+
+	// Reusable middleware handler returns false for non-API routes when fallbackNotFound is false.
+	const handler = createSyncRequestHandler({ store, authMode: 'local', fallbackNotFound: false });
+	const handled = await handler({ method: 'GET', url: '/src/main.ts', headers: {}, socket: { remoteAddress: '127.0.0.1' } }, {});
+	assert.equal(handled, false);
+});
+
+test('Binance REST relay enforces allowlist, caches exchangeInfo, forwards 418/Retry-After, and requires auth', async t => {
+	const upstreamCalls = [];
+	const relay = createMarketRelay({
+		restFetch: async url => {
+			upstreamCalls.push(url);
+			if (url.includes('/exchangeInfo')) {
+				return {
+					status: 200,
+					contentType: 'application/json',
+					body: Buffer.from(JSON.stringify({ symbols: [{ symbol: 'BTCUSDT' }] })),
+				};
+			}
+			if (url.includes('symbol=BANNED')) {
+				return {
+					status: 418,
+					contentType: 'application/json',
+					body: Buffer.from(JSON.stringify({ code: -1003, msg: 'IP(1.2.3.4) banned until 1799999999000' })),
+					retryAfter: '1200',
+					usedWeight: '54',
+				};
+			}
+			return {
+				status: 200,
+				contentType: 'application/json',
+				body: Buffer.from(JSON.stringify([[1700000040000, '100', '110', '90', '105', '12']])),
+			};
+		},
+	});
+	t.after(() => relay.close());
+	const { baseUrl } = await startServer(t, { authMode: 'token', marketRelay: relay });
+
+	// Unauthenticated market relay request is blocked.
+	assert.equal((await fetch(`${baseUrl}/v1/market/binance/spot/api/v3/klines?symbol=BTCUSDT&interval=1h`)).status, 401);
+
+	// Disallowed private/unknown endpoints are rejected (prevents SSRF / private API exposure).
+	assert.equal((await fetch(`${baseUrl}/v1/market/binance/spot/api/v3/account`, { headers: authHeaders() })).status, 404);
+	assert.equal((await fetch(`${baseUrl}/v1/market/binance/perpetual/api/v3/klines`, { headers: authHeaders() })).status, 404);
+
+	// Valid klines request is relayed with sanitized query string.
+	const kRes = await fetch(`${baseUrl}/v1/market/binance/spot/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2&evil=1`, {
+		headers: authHeaders(),
+	});
+	assert.equal(kRes.status, 200);
+	assert.deepEqual(await kRes.json(), [[1700000040000, '100', '110', '90', '105', '12']]);
+	assert.equal(upstreamCalls[0], 'https://data-api.binance.vision/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=2');
+
+	// exchangeInfo is cached on the server (second request is a cache HIT without hitting upstream).
+	const ex1 = await fetch(`${baseUrl}/v1/market/binance/spot/api/v3/exchangeInfo`, { headers: authHeaders() });
+	assert.equal(ex1.status, 200);
+	assert.equal(ex1.headers.get('x-terminal-cache'), 'MISS');
+	const ex2 = await fetch(`${baseUrl}/v1/market/binance/spot/api/v3/exchangeInfo`, { headers: authHeaders() });
+	assert.equal(ex2.status, 200);
+	assert.equal(ex2.headers.get('x-terminal-cache'), 'HIT');
+	assert.equal(upstreamCalls.filter(u => u.includes('/exchangeInfo')).length, 1);
+
+	// Upstream 418 and Retry-After are preserved and exposed via CORS.
+	const banRes = await fetch(`${baseUrl}/v1/market/binance/perpetual/fapi/v1/klines?symbol=BANNED&interval=1h`, {
+		headers: authHeaders(),
+	});
+	assert.equal(banRes.status, 418);
+	assert.equal(banRes.headers.get('retry-after'), '1200');
+	assert.match(banRes.headers.get('access-control-expose-headers') ?? '', /Retry-After/);
+});
+
+test('Binance WebSocket relay enforces one-time ws-ticket in token mode, same-origin in local mode, and streams allowlist', async t => {
+	// Spin up a local mock upstream Binance WebSocket server.
+	const mockUpstream = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+	await once(mockUpstream, 'listening');
+	t.after(() => new Promise(resolve => mockUpstream.close(() => resolve())));
+	const upstreamUrls = [];
+	mockUpstream.on('connection', (ws, req) => {
+		upstreamUrls.push(req.url);
+		ws.send(JSON.stringify({ stream: 'btcusdt@kline_1h', data: { e: 'kline', s: 'BTCUSDT', ok: true } }));
+	});
+	const upstreamWsBase = `ws://127.0.0.1:${mockUpstream.address().port}`;
+
+	// 1. Token mode: requires one-time ticket issued via POST /v1/market/ws-ticket.
+	const tokenRelay = createMarketRelay({
+		endpoints: {
+			spotRest: 'https://data-api.binance.vision',
+			perpetualRest: 'https://fapi.binance.com',
+			spotWs: upstreamWsBase,
+			perpetualWs: upstreamWsBase,
+		},
+	});
+	t.after(() => tokenRelay.close());
+	const tokenServer = await startServer(t, { authMode: 'token', marketRelay: tokenRelay });
+	const tokenWsBase = tokenServer.baseUrl.replace(/^http:/, 'ws:');
+
+	assert.equal((await fetch(`${tokenServer.baseUrl}/v1/market/ws-ticket`, { method: 'POST' })).status, 401);
+	const ticketRes = await fetch(`${tokenServer.baseUrl}/v1/market/ws-ticket`, {
+		method: 'POST',
+		headers: authHeaders(),
+	});
+	assert.equal(ticketRes.status, 200);
+	const { ticket } = await ticketRes.json();
+	assert.ok(typeof ticket === 'string' && ticket.length >= 20);
+
+	// Missing ticket is rejected with 401.
+	await assert.rejects(new Promise((resolve, reject) => {
+		const ws = new WebSocket(`${tokenWsBase}/v1/market/binance/perpetual/stream?streams=btcusdt@kline_1h`);
+		ws.once('open', () => { ws.close(); resolve(); });
+		ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP_${res.statusCode}`)));
+		ws.once('error', reject);
+	}), /HTTP_401/);
+
+	// Valid ticket connects and forwards upstream messages.
+	const received = await new Promise((resolve, reject) => {
+		const ws = new WebSocket(`${tokenWsBase}/v1/market/binance/perpetual/stream?streams=btcusdt@kline_1h&ticket=${encodeURIComponent(ticket)}`);
+		ws.once('message', data => {
+			ws.close();
+			resolve(JSON.parse(data.toString()));
+		});
+		ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP_${res.statusCode}`)));
+		ws.once('error', reject);
+	});
+	assert.equal(received.data.s, 'BTCUSDT');
+	assert.equal(upstreamUrls[0], '/stream?streams=btcusdt@kline_1h');
+
+	// Reusing the same ticket is rejected (strictly one-time).
+	await assert.rejects(new Promise((resolve, reject) => {
+		const ws = new WebSocket(`${tokenWsBase}/v1/market/binance/perpetual/stream?streams=btcusdt@kline_1h&ticket=${encodeURIComponent(ticket)}`);
+		ws.once('open', () => { ws.close(); resolve(); });
+		ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP_${res.statusCode}`)));
+		ws.once('error', reject);
+	}), /HTTP_401/);
+
+	// Invalid stream name is rejected with 400 even with a fresh ticket.
+	const { ticket: ticket2 } = await (await fetch(`${tokenServer.baseUrl}/v1/market/ws-ticket`, { method: 'POST', headers: authHeaders() })).json();
+	await assert.rejects(new Promise((resolve, reject) => {
+		const ws = new WebSocket(`${tokenWsBase}/v1/market/binance/perpetual/stream?streams=btcusdt@userData&ticket=${encodeURIComponent(ticket2)}`);
+		ws.once('open', () => { ws.close(); resolve(); });
+		ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP_${res.statusCode}`)));
+		ws.once('error', reject);
+	}), /HTTP_400/);
+
+	// 2. Local mode: accepts same-origin loopback without ticket and blocks cross-origin.
+	const localRelay = createMarketRelay({
+		endpoints: {
+			spotRest: 'https://data-api.binance.vision',
+			perpetualRest: 'https://fapi.binance.com',
+			spotWs: upstreamWsBase,
+			perpetualWs: upstreamWsBase,
+		},
+	});
+	t.after(() => localRelay.close());
+	const localServer = await startServer(t, { authMode: 'local', marketRelay: localRelay });
+	const localWsBase = localServer.baseUrl.replace(/^http:/, 'ws:');
+
+	await assert.rejects(new Promise((resolve, reject) => {
+		const ws = new WebSocket(`${localWsBase}/v1/market/binance/spot/stream?streams=btcusdt@kline_1h`, {
+			headers: { Origin: 'https://evil.example' },
+		});
+		ws.once('open', () => { ws.close(); resolve(); });
+		ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP_${res.statusCode}`)));
+		ws.once('error', reject);
+	}), /HTTP_403/);
+
+	const localReceived = await new Promise((resolve, reject) => {
+		const ws = new WebSocket(`${localWsBase}/v1/market/binance/spot/stream?streams=btcusdt@kline_1h`, {
+			headers: { Origin: localServer.baseUrl },
+		});
+		ws.once('message', data => {
+			ws.close();
+			resolve(JSON.parse(data.toString()));
+		});
+		ws.once('unexpected-response', (_req, res) => reject(new Error(`HTTP_${res.statusCode}`)));
+		ws.once('error', reject);
+	});
+	assert.equal(localReceived.data.ok, true);
 });

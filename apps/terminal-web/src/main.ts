@@ -1,4 +1,4 @@
-import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, openInstrument, parseInstrumentKey, parseWorkspace, parseWorkspaceTabsSnapshot, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type SyncSnapshot, type SyncedDrawingRecord, type SyncedInstrumentState, type SyncedSettingRecord, type Timeframe, type Workspace } from '@terminal/domain';
+import { TIMEFRAME_SECONDS, closeTab, emptyWorkspace, instrumentKey, moveTab, openInstrument, parseInstrumentKey, parseWorkspace, parseWorkspaceTabsSnapshot, setTimeframe, type Candle, type ConnectionState, type Instrument, type MarketQuote, type SyncSnapshot, type SyncedDrawingRecord, type SyncedInstrumentState, type SyncedSettingRecord, type Timeframe, type Workspace } from '@terminal/domain';
 import { CrosshairMode } from 'lightweight-charts';
 import { createTerminalChart, type ChartLayout, type IndicatorSettings, type TerminalChart } from './chart';
 import { attachChartPinch, installViewportZoomGuard } from './chart-pinch';
@@ -12,12 +12,13 @@ import { WATCHLIST_STORAGE_KEY, hasInWatchlist, moveWatchlistItemToEdge, parseWa
 import { closeIndicatorColorPopover, renderIndicatorPanel } from './indicator-ui';
 import { indicatorLegendRow, updateIndicatorLegendValues } from './indicator-legend';
 import { createTimeframeUI } from './timeframe-ui';
-import { catalogue, coinBadge, defaultInstruments, formatPrice, instruments, marketFor, marketLabel, priceTick, registerInstruments, setWatchlistInstruments, symbolLabel } from './markets';
-import { BinanceProvider, defaultEndpoints } from './data/binance';
+import { catalogue, coinBadge, defaultInstruments, formatPrice, instruments, marketFor, marketLabel, priceTick, replaceCatalogue, setWatchlistInstruments, symbolLabel } from './markets';
+import { createProviderRegistry, loadDataSourceSettings, saveDataSourceSettings, type DataSourceSettings } from './data/data-source';
 import { startCandleFeed } from './data/candle-feed';
 import { startQuoteFeed } from './data/quote-feed';
 import { migrateDemoWorkspace } from './data/workspace-migration';
 import { createMobileUI } from './mobile';
+import { attachTabReorder } from './tab-reorder';
 import { element, icon, iconButton, unavailableButton } from './ui';
 import { createDrawingSession, exportSharedStyleDefaults, reloadSharedStyleDefaults, type DrawingSession } from './drawings/session';
 import { createPriceAxisShortcut } from './drawings/price-axis-shortcut';
@@ -26,9 +27,9 @@ import { DRAWING_DEFAULTS_STORAGE_KEY, parseDrawingStyleDefaultsStore } from './
 import { CUSTOM_COLORS_STORAGE_KEY, parseCustomColorsStore } from './drawings/color-palette';
 import { exportSharedCustomColors, reloadSharedCustomColors, setCustomColorsChangeListener } from './drawings/color-picker';
 import { createDrawingUI } from './drawings/ui';
-import { SyncEngine } from './sync/engine';
+import { SyncEngine, type MarketRelayTarget } from './sync/engine';
 import { IndexedDbSyncStorage } from './sync/storage';
-import { createSyncDialog } from './sync/ui';
+import { createSettingsModal } from './settings/settings-ui';
 import './style.css';
 import './mobile.css';
 import './indicator-legend.css';
@@ -59,19 +60,33 @@ try {
 let chart: TerminalChart | undefined;
 let drawingSession: DrawingSession | undefined;
 let priceAxisShortcut: ReturnType<typeof createPriceAxisShortcut> | undefined;
-const provider = new BinanceProvider({
-	spotRest: import.meta.env.VITE_BINANCE_SPOT_REST || defaultEndpoints.spotRest,
-	perpetualRest: import.meta.env.VITE_BINANCE_PERPETUAL_REST || defaultEndpoints.perpetualRest,
-	spotWs: import.meta.env.VITE_BINANCE_SPOT_WS || defaultEndpoints.spotWs,
-	perpetualWs: import.meta.env.VITE_BINANCE_PERPETUAL_WS || defaultEndpoints.perpetualWs,
+const loadedDataSource = loadDataSourceSettings({
+	spotRest: import.meta.env.VITE_BINANCE_SPOT_REST,
+	perpetualRest: import.meta.env.VITE_BINANCE_PERPETUAL_REST,
+	spotWs: import.meta.env.VITE_BINANCE_SPOT_WS,
+	perpetualWs: import.meta.env.VITE_BINANCE_PERPETUAL_WS,
 });
+let dataSourceSettings: DataSourceSettings = loadedDataSource.settings;
+let currentRelayTarget: MarketRelayTarget = {
+	ready: false,
+	checking: true,
+	baseUrl: window.location.origin,
+	auth: { mode: 'local' },
+	source: 'local',
+	reason: '正在连接当前服务的行情中继…',
+};
+let lastRelayFingerprint = '';
+let providerRegistry = createProviderRegistry(dataSourceSettings, undefined, undefined, currentRelayTarget);
+if (loadedDataSource.corrupted && storageNotice === '设置保存在本机') {
+	storageNotice = '数据源配置损坏，已保留原记录并回退默认 Binance';
+}
 let feed: ReturnType<typeof startCandleFeed> | undefined;
 let stopQuotes: (() => void) | undefined;
 let catalogueRequest: AbortController | undefined;
 let quoteFlush: ReturnType<typeof setTimeout> | undefined;
 let quoteSubscription = '';
 const quoteStates = { spot: '连接中', perpetual: '连接中' };
-let catalogueNotice = '正在加载 Binance 交易对…';
+let catalogueNotice = `正在加载 ${providerRegistry.active.label} 交易对…`;
 let searchMarket: 'all' | Instrument['market'] = 'all';
 let renderVersion = 0;
 let candleCount = 0;
@@ -108,9 +123,20 @@ brand.title = 'Crypto Terminal · 看盘工作台';
 brand.append(icon('logo'));
 const tabs = element('nav', 'tabs');
 tabs.setAttribute('aria-label', '交易对标签页');
+const tabOrderStatus = element('span', 'tab-order-status');
+tabOrderStatus.setAttribute('role', 'status');
+const tabReorder = attachTabReorder(tabs, (id, index) => {
+	const next = moveTab(state, id, index);
+	if (next === state) return;
+	commit(next, { tabsOnly: true });
+	const tab = state.tabs[index];
+	tabOrderStatus.textContent = `${symbolLabel(state.preferences[tab.instrumentKey].instrument)} 已移至第 ${index + 1} 个标签，共 ${state.tabs.length} 个`;
+	const moved = Array.from(tabs.querySelectorAll<HTMLElement>('.tab')).find(item => item.dataset.tabId === id);
+	moved?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+});
 const addTab = iconButton('plus', '打开交易对', () => openPicker());
 addTab.classList.add('add-tab');
-tabstrip.append(brand, tabs, addTab);
+tabstrip.append(brand, tabs, addTab, tabOrderStatus);
 
 const toolbar = element('div', 'toolbar');
 const symbolButton = element('button', 'symbol-button');
@@ -141,7 +167,7 @@ alertButton.classList.add('secondary-tool');
 const replayButton = unavailableButton('replay', '行情回放');
 replayButton.classList.add('secondary-tool');
 const spacer = element('span', 'spacer');
-const demoBadge = element('span', 'demo-badge', 'Binance');
+const demoBadge = element('span', 'demo-badge', providerRegistry.active.label);
 const focusButton = iconButton('fit', '专注模式', () => {
 	const enabled = app.classList.toggle('focus-mode');
 	focusButton.setAttribute('aria-pressed', String(enabled));
@@ -396,23 +422,26 @@ rightRail.setAttribute('aria-label', '侧边面板');
 const railWatch = iconButton('list', '自选列表面板', () => toggleWatchlist());
 rightRail.append(railWatch, unavailableButton('clock', '提醒'), iconButton('layers', '绘图对象树', () => drawingUI.openObjects()), unavailableButton('calendar', '财经日历'));
 const rightBottom = element('div', 'rail-bottom');
-rightBottom.append(iconButton('cloud', '云同步与数据迁移', () => syncDialog.open()), unavailableButton('bell', '通知'), iconButton('help', '使用说明', () => about.showModal()));
+rightBottom.append(iconButton('settings', '设置（数据源 · 存储 · 导入导出）', () => settingsModal.open('data-source')), unavailableButton('bell', '通知'), iconButton('help', '使用说明', () => about.showModal()));
 rightRail.append(rightBottom);
 workspace.append(drawingRail, chartPanel, sidebarScrim, watchlist, rightRail);
 
 const footer = element('footer', 'statusbar');
 const status = element('span', 'save-status');
 status.setAttribute('role', 'status');
-const sourceStatus = element('span', 'source-status');
-sourceStatus.append(element('i', 'status-dot'), document.createTextNode('Binance · 连接中'));
+const sourceStatus = element('button', 'source-status source-status-btn');
+sourceStatus.type = 'button';
+sourceStatus.setAttribute('aria-label', '打开数据源设置');
+sourceStatus.append(element('i', 'status-dot'), document.createTextNode(`${providerRegistry.active.label} · 连接中`));
+sourceStatus.onclick = () => settingsModal.open('data-source');
 const syncStatusBtn = element('button', 'sync-status-btn');
 syncStatusBtn.type = 'button';
 syncStatusBtn.dataset.state = 'disabled';
-syncStatusBtn.setAttribute('aria-label', '打开云同步与数据迁移设置');
+syncStatusBtn.setAttribute('aria-label', '打开存储服务设置');
 const syncStatusDot = element('i', 'sync-status-dot');
-const syncStatusText = element('span', '', '云同步未启用');
+const syncStatusText = element('span', '', '正在检测本机存储…');
 syncStatusBtn.append(syncStatusDot, syncStatusText);
-syncStatusBtn.onclick = () => syncDialog.open();
+syncStatusBtn.onclick = () => settingsModal.open('storage');
 footer.append(sourceStatus, element('span', 'footer-divider'), status, element('span', 'spacer'), syncStatusBtn);
 
 // Native dialogs keep search and information available on narrow screens, too.
@@ -445,7 +474,7 @@ attribution.target = '_blank';
 attribution.rel = 'noopener noreferrer';
 about.append(aboutHead, element('p', '', '为你的市场观察，留一个专注的空间。'),
 	element('p', '', '从顶部或自选列表打开交易对，各标签独立保存周期。使用“指标”切换均线、成交量与 MACD。'),
-	element('p', '', '行情来自 Binance USDT 现货和永续公开接口，无需 API Key。设置和画线自动保存在本机，支持自托管单人 SQLite 云同步与 JSON / SQLite 备份迁移。'),
+	element('p', '', '默认内置 Binance USDT 现货和永续公开行情，并可在「设置」中配置 Binance 代理地址或通用自定义协议数据源。单服务启动时默认连接本机内置 SQLite 存储，同时支持自定义远程同步服务及 SQLite / JSON 导入导出。'),
 	attribution, element('small', '', 'Copyright (с) 2025 TradingView, Inc.'));
 const indicatorDropdown = element('div', 'indicator-dropdown');
 indicatorDropdown.hidden = true;
@@ -604,7 +633,7 @@ drawingRail.append(railBottom);
 const mobile = createMobileUI({
 	openDrawings: () => drawingUI.openTools(),
 	openDrawingObjects: () => drawingUI.openObjects(),
-	openSync: () => syncDialog.open(),
+	openSettings: tab => settingsModal.open(tab ?? 'data-source'),
 	drawingHistory: () => ({
 		canUndo: drawingSession?.manager.canUndo() ?? false,
 		canRedo: drawingSession?.manager.canRedo() ?? false,
@@ -670,7 +699,7 @@ function renderSearch(): void {
 			element('span', `search-market-tag ${instrument.market}`, instrument.market === 'perpetual' ? '永续合约' : '现货'),
 		);
 		copy.append(element('strong', '', symbolLabel(instrument)), sub);
-		open.append(coinBadge(instrument), copy, element('span', 'search-venue', 'BINANCE'));
+		open.append(coinBadge(instrument), copy, element('span', 'search-venue', providerRegistry.labelForVenue(instrument.venue).toUpperCase()));
 		open.onclick = () => {
 			if (mobile.isMobile()) {
 				preserveMobileTimeframe();
@@ -714,7 +743,7 @@ function toggleWatchlist(force?: boolean): void {
 	railWatch.setAttribute('aria-pressed', String(open));
 }
 
-function commit(next: Workspace): void {
+function commit(next: Workspace, options: { tabsOnly?: boolean } = {}): void {
 	const tabsChanged = next.activeTabId !== state.activeTabId ||
 		next.tabs.length !== state.tabs.length ||
 		next.tabs.some((tab, i) => tab.id !== state.tabs[i]?.id || tab.instrumentKey !== state.tabs[i]?.instrumentKey);
@@ -733,7 +762,10 @@ function commit(next: Workspace): void {
 			activeTabId: state.activeTabId,
 		});
 	}
-	render();
+	if (options.tabsOnly) {
+		renderTabs(false);
+		status.textContent = storageNotice;
+	} else render();
 }
 
 function renderPaneCornerActions(paneId: PaneId, label: string, activeOrder: PaneId[]): void {
@@ -885,9 +917,10 @@ function renderDetail(instrument?: Instrument): void {
 		detail.append(element('p', 'detail-empty', '选择交易对，查看市场概览'));
 		return;
 	}
+	const venueLabel = providerRegistry.labelForVenue(instrument.venue);
 	const heading = element('h2', 'detail-title');
 	heading.append(coinBadge(instrument), document.createTextNode(symbolLabel(instrument)));
-	detail.append(heading, element('p', 'detail-subtitle', `${marketFor(instrument).name} / TetherUS`), element('p', 'detail-market', `${marketLabel(instrument)} · USDT · BINANCE`));
+	detail.append(heading, element('p', 'detail-subtitle', `${marketFor(instrument).name} / TetherUS`), element('p', 'detail-market', `${marketLabel(instrument)} · USDT · ${venueLabel.toUpperCase()}`));
 	const quote = quotes.get(instrumentKey(instrument));
 	if (!quote) return;
 	const price = element('div', 'detail-price');
@@ -904,7 +937,7 @@ function renderDetail(instrument?: Instrument): void {
 	const captions = element('div', 'range-captions');
 	captions.append(element('span', '', '24h 最低'), element('span', '', '24h 最高'));
 	dailyRange.append(values, bar, captions);
-	detail.append(dailyRange, element('div', 'detail-note', `Binance · 24h 滚动统计 · ${new Date(quote.updatedAt).toLocaleTimeString('zh-CN')}`));
+	detail.append(dailyRange, element('div', 'detail-note', `${venueLabel} · 24h 滚动统计 · ${new Date(quote.updatedAt).toLocaleTimeString('zh-CN')}`));
 }
 
 function renderOhlc(candle: Candle): void {
@@ -922,6 +955,33 @@ function renderOhlc(candle: Candle): void {
 	syncPriceOverlayHeight();
 }
 
+function renderTabs(scrollActive = true): void {
+	tabReorder.cancel();
+	const focusedId = document.activeElement?.closest<HTMLElement>('.tab')?.dataset.tabId;
+	tabs.replaceChildren();
+	for (const tab of state.tabs) {
+		const preference = state.preferences[tab.instrumentKey];
+		const group = element('div', `tab ${tab.id === state.activeTabId ? 'active' : ''}`);
+		group.dataset.tabId = tab.id;
+		const focus = element('button', 'tab-focus');
+		focus.append(coinBadge(preference.instrument), element('span', 'tab-symbol', symbolLabel(preference.instrument)), element('small', 'tab-period', preference.timeframe));
+		focus.setAttribute('aria-label', `${preference.instrument.symbol} ${marketLabel(preference.instrument)} · ${preference.timeframe}`);
+		focus.setAttribute('aria-pressed', String(tab.id === state.activeTabId));
+		focus.title = '左右拖动调整顺序；Alt + ← / → 移动标签';
+		focus.setAttribute('aria-keyshortcuts', 'Alt+ArrowLeft Alt+ArrowRight');
+		focus.onclick = () => { if (state.activeTabId !== tab.id) commit({ ...state, activeTabId: tab.id }); };
+		const close = iconButton('close', `关闭 ${preference.instrument.symbol} ${marketLabel(preference.instrument)}`, () => commit(closeTab(state, tab.id)));
+		close.classList.add('tab-close');
+		group.append(focus, close);
+		tabs.append(group);
+	}
+	if (scrollActive) tabs.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	if (focusedId) {
+		const focused = Array.from(tabs.querySelectorAll<HTMLElement>('.tab')).find(tab => tab.dataset.tabId === focusedId);
+		focused?.querySelector<HTMLButtonElement>('.tab-focus')?.focus({ preventScroll: true });
+	}
+}
+
 function render(): void {
 	const version = ++renderVersion;
 	feed?.stop();
@@ -934,25 +994,11 @@ function render(): void {
 	hoveredPane = null;
 	lastChartLayout = { panes: {}, rightScaleWidth: mobile.isMobile() ? 64 : 78, maximizedPane: null };
 	candleCount = 0;
-	tabs.replaceChildren();
 	stage.replaceChildren();
 	ohlc.replaceChildren();
 	status.textContent = storageNotice;
 	for (const item of ranges.querySelectorAll('button')) item.classList.remove('selected');
-	for (const tab of state.tabs) {
-		const preference = state.preferences[tab.instrumentKey];
-		const group = element('div', `tab ${tab.id === state.activeTabId ? 'active' : ''}`);
-		const focus = element('button', 'tab-focus');
-		focus.append(coinBadge(preference.instrument), element('span', 'tab-symbol', symbolLabel(preference.instrument)), element('small', 'tab-period', preference.timeframe));
-		focus.setAttribute('aria-label', `${preference.instrument.symbol} ${marketLabel(preference.instrument)} · ${preference.timeframe}`);
-		focus.setAttribute('aria-pressed', String(tab.id === state.activeTabId));
-		focus.onclick = () => commit({ ...state, activeTabId: tab.id });
-		const close = iconButton('close', `关闭 ${preference.instrument.symbol} ${marketLabel(preference.instrument)}`, () => commit(closeTab(state, tab.id)));
-		close.classList.add('tab-close');
-		group.append(focus, close);
-		tabs.append(group);
-	}
-	tabs.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+	renderTabs();
 	const active = state.tabs.find(tab => tab.id === state.activeTabId);
 	for (const [key, entry] of quoteRows) entry.row.classList.toggle('selected', key === active?.instrumentKey);
 	updateIndicatorLabels();
@@ -973,9 +1019,22 @@ function render(): void {
 		emptyState.append(open);
 		return;
 	}
-	title.replaceChildren(coinBadge(preference.instrument), element('span', '', `${marketFor(preference.instrument).name} / USDT · ${marketLabel(preference.instrument)}`), element('span', 'chart-meta', `· ${TIMEFRAME_LONG_LABELS[activeTimeframe]} · BINANCE`));
+	const venueLabel = providerRegistry.labelForVenue(preference.instrument.venue);
+	const activeProvider = providerRegistry.resolve(preference.instrument.venue);
+	title.replaceChildren(coinBadge(preference.instrument), element('span', '', `${marketFor(preference.instrument).name} / USDT · ${marketLabel(preference.instrument)}`), element('span', 'chart-meta', `· ${TIMEFRAME_LONG_LABELS[activeTimeframe]} · ${venueLabel.toUpperCase()}`));
+	if (!activeProvider) {
+		setConnectionState('error', '未配置数据源', venueLabel);
+		const configBtn = element('button', 'primary-button', '打开数据源设置');
+		configBtn.onclick = () => settingsModal.open('data-source');
+		emptyState.hidden = false;
+		emptyState.replaceChildren(
+			element('p', '', `当前未配置数据源 "${preference.instrument.venue}"，原有标签与画线已保留。请在设置中配置该数据源后再加载行情。`),
+			configBtn,
+		);
+		return;
+	}
 	emptyState.hidden = false;
-	emptyState.replaceChildren(element('p', '', '正在加载行情…'));
+	emptyState.replaceChildren(element('p', '', `正在加载 ${venueLabel} 行情…`));
 	const currentChart = createTerminalChart(stage, settings, renderOhlc, applyPaneLayout);
 	chart = currentChart;
 	updateIndicatorLabels();
@@ -1001,7 +1060,7 @@ function render(): void {
 	currentChart.chart.applyOptions({ crosshair: { mode: crosshairVisible ? CrosshairMode.Normal : CrosshairMode.Hidden } });
 	currentChart.setPriceFormat(priceTick(preference.instrument));
 	const current = (): boolean => version === renderVersion && chart === currentChart;
-	feed = startCandleFeed(provider, preference.instrument, activeTimeframe, {
+	feed = startCandleFeed(activeProvider, preference.instrument, activeTimeframe, {
 		onSnapshot: (candles, initial) => {
 			if (!current()) return;
 			candleCount = candles.length;
@@ -1014,12 +1073,18 @@ function render(): void {
 		onCandle: (candle, count) => { if (current()) { if (count > candleCount) currentDrawings.beforeDataChange(); candleCount = count; currentChart.update(candle); currentDrawings.update(candle); } },
 		onState: (connection, message) => {
 			if (!current()) return;
-			setConnectionState(connection, message);
+			setConnectionState(connection, message, venueLabel);
 			if (connection === 'error' && candleCount === 0) {
 				const retry = element('button', 'primary-button', '重新连接');
 				retry.onclick = () => feed?.retry();
 				emptyState.hidden = false;
-				emptyState.replaceChildren(element('p', '', message), retry);
+				if (dataSourceSettings.binance.transport === 'relay' && preference.instrument.venue === 'binance' && !currentRelayTarget.ready) {
+					const actionBtn = element('button', 'primary-button', currentRelayTarget.needsToken ? '填写访问口令' : '打开数据源设置');
+					actionBtn.onclick = () => settingsModal.open(currentRelayTarget.needsToken ? 'storage' : 'data-source');
+					emptyState.replaceChildren(element('p', '', message), actionBtn);
+				} else {
+					emptyState.replaceChildren(element('p', '', message), retry);
+				}
 			}
 		},
 	});
@@ -1028,14 +1093,17 @@ function render(): void {
 	});
 }
 
-function setConnectionState(connection: ConnectionState, message: string): void {
-	if (sourceStatus.textContent === `Binance · ${message}`) return;
-	sourceStatus.replaceChildren(element('i', 'status-dot'), document.createTextNode(`Binance · ${message}`));
+let lastConnectionState: ConnectionState = 'connecting';
+function setConnectionState(connection: ConnectionState, message: string, sourceLabel = providerRegistry.active.label): void {
+	lastConnectionState = connection;
+	const fullLabel = `${sourceLabel} · ${message}`;
+	if (sourceStatus.textContent === fullLabel) return;
+	sourceStatus.replaceChildren(element('i', 'status-dot'), document.createTextNode(fullLabel));
 	sourceStatus.dataset.state = connection;
 	marketStatus.dataset.state = connection;
-	marketStatus.replaceChildren(element('i', 'market-status-dot'), element('span', '', connection === 'live' ? '实时' : message));
-	demoBadge.textContent = connection === 'live' ? 'Binance 实时' : 'Binance 连接中';
-	mobile.setConnection(connection, message);
+	marketStatus.replaceChildren(element('i', 'market-status-dot'), element('span', '', message));
+	demoBadge.textContent = connection === 'live' ? `${sourceLabel} ${message}` : `${sourceLabel} 连接中`;
+	mobile.setConnection(connection, message, sourceLabel);
 }
 
 function flushQuotes(): void {
@@ -1053,26 +1121,59 @@ function flushQuotes(): void {
 	mobile.updateQuotes(quotes);
 }
 
+function relayTargetFingerprint(target: MarketRelayTarget): string {
+	return [
+		target.ready ? '1' : '0',
+		target.checking ? '1' : '0',
+		target.source,
+		target.baseUrl,
+		target.auth.mode,
+		target.auth.mode === 'token' ? target.auth.token : '',
+		target.needsToken ? '1' : '0',
+		target.reason ?? '',
+	].join('|');
+}
+
+function providerFingerprint(): string {
+	const { binance, generic } = dataSourceSettings;
+	return [
+		binance.transport,
+		binance.transport === 'relay' ? relayTargetFingerprint(currentRelayTarget) : '',
+		binance.spotRest,
+		binance.perpetualRest,
+		binance.spotWs,
+		binance.perpetualWs,
+		generic.venue,
+		generic.restBaseUrl,
+		generic.wsUrl,
+		generic.pollIntervalMs,
+		generic.markets.join(','),
+	].join('|');
+}
+
 function ensureWatchlist(): void {
 	const subscribed: Instrument[] = [];
 	const seen = new Set<string>();
 	for (const instrument of instruments) {
 		const key = instrumentKey(instrument);
-		if (!seen.has(key)) { seen.add(key); subscribed.push(instrument); }
+		if (!seen.has(key) && providerRegistry.resolve(instrument.venue)) {
+			seen.add(key);
+			subscribed.push(instrument);
+		}
 	}
 	for (const tab of state.tabs) {
 		const instrument = state.preferences[tab.instrumentKey].instrument;
-		if (instrument.venue === 'binance' && !seen.has(tab.instrumentKey)) {
+		if (providerRegistry.resolve(instrument.venue) && !seen.has(tab.instrumentKey)) {
 			seen.add(tab.instrumentKey);
 			subscribed.push(instrument);
 		}
 	}
-	const signature = subscribed.map(instrumentKey).join(',');
+	const signature = `${providerFingerprint()}::${subscribed.map(instrumentKey).join(',')}`;
 	if (signature === quoteSubscription) return;
 	stopQuotes?.();
 	quoteSubscription = signature;
 	if (subscribed.length === 0) return;
-	stopQuotes = startQuoteFeed(provider, subscribed, (instrument, quote) => {
+	stopQuotes = startQuoteFeed(venue => providerRegistry.resolve(venue), subscribed, (instrument, quote) => {
 		quotes.set(instrumentKey(instrument), quote);
 		if (!quoteFlush) quoteFlush = setTimeout(flushQuotes, 400);
 	}, (market, message) => {
@@ -1085,16 +1186,50 @@ async function loadCatalogue(): Promise<void> {
 	catalogueRequest?.abort();
 	const controller = new AbortController();
 	catalogueRequest = controller;
+	const activeProvider = providerRegistry.active;
+	catalogueNotice = `正在加载 ${activeProvider.label} 交易对…`;
+	if (picker.open) renderSearch();
 	const failed: string[] = [];
+	const loaded: { instrument: Instrument; tickSize: number }[] = [];
 	await Promise.all((['spot', 'perpetual'] as const).map(async market => {
-		try { registerInstruments(await provider.getInstruments(market, controller.signal)); }
-		catch { failed.push(market === 'spot' ? '现货' : '永续'); }
+		try {
+			const items = await activeProvider.getInstruments(market, controller.signal);
+			loaded.push(...items);
+		} catch {
+			failed.push(market === 'spot' ? '现货' : '永续');
+		}
 	}));
 	if (controller.signal.aborted) return;
-	catalogueNotice = failed.length ? `${failed.join(' / ')}目录加载失败，暂显示常用交易对；重新打开搜索可重试` : `BINANCE · ${catalogue.length} 个 USDT 交易对 · 最多显示 100 项，请输入搜索`;
+	if (loaded.length > 0) {
+		replaceCatalogue(loaded);
+	} else if (activeProvider.venue === 'binance') {
+		replaceCatalogue(defaultInstruments.map(instrument => ({ instrument, tickSize: priceTick(instrument) })));
+	} else {
+		replaceCatalogue([]);
+	}
+	catalogueNotice = failed.length
+		? `${activeProvider.label} ${failed.join(' / ')}目录加载失败；重新打开搜索可重试`
+		: `${activeProvider.label.toUpperCase()} · ${catalogue.length} 个交易对 · 最多显示 100 项，请输入搜索`;
 	const active = state.tabs.find(tab => tab.id === state.activeTabId);
 	if (active) chart?.setPriceFormat(priceTick(state.preferences[active.instrumentKey].instrument));
 	if (picker.open) renderSearch();
+}
+
+function rebuildProvidersAndRefresh(): void {
+	providerRegistry = createProviderRegistry(dataSourceSettings, undefined, undefined, currentRelayTarget);
+	mobile.setDataSourceLabel(providerRegistry.active.label);
+	quoteSubscription = '';
+	ensureWatchlist();
+	void loadCatalogue();
+	render();
+}
+
+function applyDataSourceSettings(next: DataSourceSettings): void {
+	saveDataSourceSettings(next);
+	dataSourceSettings = next;
+	currentRelayTarget = syncEngine.getMarketRelayTarget();
+	lastRelayFingerprint = relayTargetFingerprint(currentRelayTarget);
+	rebuildProvidersAndRefresh();
 }
 
 function updateClock(): void {
@@ -1413,18 +1548,51 @@ const syncEngine = new SyncEngine(
 	{ fallbackOrigin: window.location.origin },
 );
 
-const syncDialog = createSyncDialog(app, syncEngine);
+const settingsModal = createSettingsModal(app, {
+	syncEngine,
+	dataSource: {
+		getSettings: () => dataSourceSettings,
+		applySettings: applyDataSourceSettings,
+	},
+});
+mobile.setDataSourceLabel(providerRegistry.active.label);
 setCustomColorsChangeListener(() => {
 	void syncEngine.enqueueSetting('custom-colors', exportSharedCustomColors());
 });
+let appBootstrapped = false;
 const unsubscribeSync = syncEngine.subscribe(view => {
 	syncStatusBtn.dataset.state = view.status;
 	syncStatusText.textContent = view.message;
 	mobile.setSyncStatus(view.message);
+	const nextRelay = syncEngine.getMarketRelayTarget();
+	const nextFingerprint = relayTargetFingerprint(nextRelay);
+	if (nextFingerprint !== lastRelayFingerprint) {
+		currentRelayTarget = nextRelay;
+		lastRelayFingerprint = nextFingerprint;
+		if (appBootstrapped && dataSourceSettings.binance.transport === 'relay') {
+			rebuildProvidersAndRefresh();
+		} else if (dataSourceSettings.binance.transport === 'relay') {
+			providerRegistry = createProviderRegistry(dataSourceSettings, undefined, undefined, currentRelayTarget);
+			mobile.setDataSourceLabel(providerRegistry.active.label);
+		}
+	}
 });
 
+let hiddenSince = 0;
 const onOnline = (): void => { feed?.retry(); void syncEngine.syncNow(); };
-const onVisibility = (): void => { if (!document.hidden) { feed?.retry(); void syncEngine.syncNow(); } else drawingSession?.flush(); };
+const onVisibility = (): void => {
+	if (document.hidden) {
+		hiddenSince = Date.now();
+		drawingSession?.flush();
+		return;
+	}
+	const awayMs = hiddenSince ? Date.now() - hiddenSince : 0;
+	hiddenSince = 0;
+	if (lastConnectionState !== 'live' || awayMs >= 30000) {
+		feed?.retry();
+	}
+	void syncEngine.syncNow();
+};
 const onBeforeUnload = (): void => { drawingSession?.flush(); };
 window.addEventListener('online', onOnline);
 document.addEventListener('visibilitychange', onVisibility);
@@ -1436,6 +1604,7 @@ window.addEventListener('pagehide', onPageHide);
 window.addEventListener('pageshow', onPageShow);
 const clockTimer = window.setInterval(updateClock, 30000);
 if (import.meta.hot) import.meta.hot.dispose(() => {
+	tabReorder.destroy();
 	stopChartPinch();
 	stopViewportZoomGuard();
 	closeWatchContextMenu();
@@ -1443,7 +1612,7 @@ if (import.meta.hot) import.meta.hot.dispose(() => {
 	setCustomColorsChangeListener(undefined);
 	unsubscribeSync();
 	syncEngine.stopPolling();
-	syncDialog.destroy();
+	settingsModal.destroy();
 	timeframeUI.destroy();
 	mobile.destroy();
 	onPageHide();
@@ -1458,6 +1627,7 @@ if (import.meta.hot) import.meta.hot.dispose(() => {
 	window.removeEventListener('online', onOnline);
 	document.removeEventListener('visibilitychange', onVisibility);
 });
+appBootstrapped = true;
 updateClock();
 updateSidebarAccessibility();
 ensureWatchlist();

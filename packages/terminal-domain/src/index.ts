@@ -115,10 +115,14 @@ export interface SyncCapabilities {
 	mode: 'single-user';
 	storage: 'sqlite';
 	storeId: string;
-	authentication: 'token';
+	authentication: 'token' | 'local';
 	sync: boolean;
 	backup: boolean;
 	staticWeb: boolean;
+	marketRelay?: {
+		enabled: boolean;
+		binance: boolean;
+	};
 }
 
 export type PendingSyncMutation =
@@ -235,6 +239,18 @@ export function closeTab(state: Workspace, tabId: string): Workspace {
 		activeTabId: state.activeTabId === tabId
 			? (tabs[Math.min(index, tabs.length - 1)]?.id ?? null) : state.activeTabId,
 	};
+}
+
+/** Move a tab to its final index without changing the active chart or instrument preferences. */
+export function moveTab(state: Workspace, tabId: string, targetIndex: number): Workspace {
+	const from = state.tabs.findIndex(tab => tab.id === tabId);
+	if (from < 0 || !Number.isInteger(targetIndex) || targetIndex < 0 || targetIndex >= state.tabs.length || from === targetIndex) {
+		return state;
+	}
+	const tabs = [...state.tabs];
+	const [tab] = tabs.splice(from, 1);
+	tabs.splice(targetIndex, 0, tab);
+	return { ...state, tabs };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

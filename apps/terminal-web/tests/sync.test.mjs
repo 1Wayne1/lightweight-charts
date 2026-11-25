@@ -9,9 +9,10 @@ import { MemorySyncStorage } from '../src/sync/storage';
  * In-process fetch adapter backed by the real SQLite store (no sockets needed in sandbox).
  * Allows toggling `online` to simulate server shutdown and swapping `store` to simulate PC migration.
  */
-function createMockSyncTransport(initialStore, token = 'secret-sync-token-123') {
+function createMockSyncTransport(initialStore, token = 'secret-sync-token-123', authMode = 'token') {
 	let activeStore = initialStore;
 	let online = true;
+	let mode = authMode;
 	const calls = [];
 
 	const fetcher = async (input, init = {}) => {
@@ -31,20 +32,37 @@ function createMockSyncTransport(initialStore, token = 'secret-sync-token-123') 
 				mode: 'single-user',
 				storage: 'sqlite',
 				storeId: activeStore.storeId,
-				authentication: 'token',
+				authentication: mode,
 				sync: true,
 				backup: true,
-				staticWeb: false,
+				staticWeb: true,
 			});
 		}
 
-		const auth = init.headers?.Authorization ?? init.headers?.authorization;
-		if (auth !== `Bearer ${token}`) {
-			return jsonResponse(401, { error: 'unauthorized' });
+		if (mode === 'local') {
+			const localHeader = init.headers?.['X-Terminal-Local'] ?? init.headers?.['x-terminal-local'];
+			if (localHeader !== '1') {
+				return jsonResponse(403, { error: 'forbidden' });
+			}
+		} else {
+			const auth = init.headers?.Authorization ?? init.headers?.authorization;
+			if (auth !== `Bearer ${token}`) {
+				return jsonResponse(401, { error: 'unauthorized' });
+			}
 		}
 
 		if (url.pathname === '/v1/snapshot' && method === 'GET') {
 			return jsonResponse(200, activeStore.getSnapshot());
+		}
+
+		if (url.pathname === '/v1/backup/sqlite' && method === 'GET') {
+			return new Response(new Uint8Array([83, 81, 76, 105, 116, 101]), {
+				status: 200,
+				headers: {
+					'Content-Type': 'application/vnd.sqlite3',
+					'Content-Disposition': 'attachment; filename="terminal-local.db"',
+				},
+			});
 		}
 
 		if (url.pathname === '/v1/import' && method === 'POST') {
@@ -82,6 +100,7 @@ function createMockSyncTransport(initialStore, token = 'secret-sync-token-123') 
 		calls,
 		setOnline(value) { online = value; },
 		setStore(nextStore) { activeStore = nextStore; },
+		setAuthMode(nextMode) { mode = nextMode; },
 	};
 }
 
@@ -384,4 +403,57 @@ test('watchlist and open workspace tabs sync across two devices independently of
 		[200, '#2962ff', false],
 	]);
 	assert.deepEqual(hostB.settings.get('custom-colors').value.colors, ['#ffa726', '#4f82bd']);
+});
+
+test('auto-discovers built-in local storage on startup without token, supports backup, and protects switching to remote server', async t => {
+	const localStore = openStore(':memory:');
+	const remoteStore = openStore(':memory:');
+	t.after(() => { localStore.close(); remoteStore.close(); });
+	const transport = createMockSyncTransport(localStore, 'remote-secret-token-999', 'local');
+	const host = createFakeHost();
+	const storage = new MemorySyncStorage();
+	const engine = new SyncEngine(storage, host, {
+		fetcher: transport.fetcher,
+		fallbackOrigin: 'http://127.0.0.1:5173',
+	});
+
+	await engine.init();
+	await engine.syncNow();
+	const view = engine.getViewState();
+	assert.equal(view.config.enabled, true);
+	assert.equal(view.config.mode, 'local');
+	assert.equal(view.status, 'synced');
+	assert.equal(view.localService.available, true);
+	assert.equal(view.localService.authMode, 'local');
+
+	// Save a drawing to local SQLite without configuring URL or token.
+	const key = 'binance:spot:BTC-USDT';
+	await engine.enqueuePreference(key, '4h');
+	await engine.syncNow();
+	assert.equal(localStore.getSnapshot().instruments[0].timeframe, '4h');
+
+	// SQLite backup works in local mode without token.
+	const backup = await engine.downloadBackup();
+	assert.equal(backup.filename, 'terminal-local.db');
+	assert.equal(backup.blob.size, 6);
+
+	// Switching from built-in local SQLite to a remote token-protected server triggers storeMismatch protection.
+	transport.setStore(remoteStore);
+	transport.setAuthMode('token');
+	await engine.configure({ serverUrl: 'http://remote.local:8080', token: 'remote-secret-token-999', enabled: true, mode: 'remote' });
+	assert.equal(engine.getViewState().status, 'store_mismatch');
+	assert.equal(engine.getViewState().storeMismatch?.expectedStoreId, localStore.storeId);
+	assert.equal(engine.getViewState().storeMismatch?.actualStoreId, remoteStore.storeId);
+
+	// Respects explicit user disable across reloads (does not force local mode back on).
+	await engine.configure({ serverUrl: '', token: '', enabled: false, mode: 'disabled' });
+	transport.setStore(localStore);
+	transport.setAuthMode('local');
+	const reloaded = new SyncEngine(storage, host, {
+		fetcher: transport.fetcher,
+		fallbackOrigin: 'http://127.0.0.1:5173',
+	});
+	await reloaded.init();
+	assert.equal(reloaded.getViewState().config.enabled, false);
+	assert.equal(reloaded.getViewState().config.mode, 'disabled');
 });

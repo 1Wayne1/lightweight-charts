@@ -24,7 +24,11 @@ V1 每个工作区对同一交易对只保留一个标签页，重复打开时�
 
 ## 行情适配
 
-当前应用使用 `BinanceProvider`，按 `spot` / `perpetual` 分开请求与订阅，只接入 USDT 现货和 USDT 本位永续。REST 提供 exchangeInfo 交易对目录、价格 tickSize、历史 K 线及 24h ticker；WebSocket 提供活动图表 K 线和每类市场一个组合 ticker 流。合约 K 线 / ticker 使用 `/market/stream` 路径。`mock-provider.ts` 只保留为演示开发源，正常界面不回退到模拟数据。
+应用通过统一 `MarketFeedProvider` 抽象与 `ProviderRegistry` 按交易对 `venue` 路由行情请求与订阅：
+
+- **内置 `BinanceProvider`**（`venue: 'binance'`）：按 `spot` / `perpetual` 分开请求与订阅，只接入 USDT 现货和 USDT 本位永续。默认优先采用**服务端行情中继**（`/v1/market/binance/{spot|perpetual}/...` REST 与 WebSocket，由 `services/sync-api/src/market-relay.mjs` 提供严格白名单只读转发、`exchangeInfo` 10 分钟缓存及可选 `MARKET_PROXY_URL` HTTP CONNECT 代理穿透；口令模式下 WebSocket 通过 `POST /v1/market/ws-ticket` 签发 30 秒一次性票据鉴权，避免把 `SYNC_TOKEN` 写入 URL 或日志）；也支持在「设置 → 数据源」切换为浏览器直连并覆盖公开 REST / WebSocket 镜像地址。合约 K 线 / ticker 使用 `/market/stream` 路径。
+- **通用自定义协议源 `GenericMarketProvider`**：由用户在设置页配置独立 `venue`（校验不为 `binance`，保证与币安画线严格隔离）、REST 根地址（标准 `/klines`，可选 `/instruments` 与 `/ticker`）及可选 WebSocket 地址（留空自动降级为可配置间隔的 REST 轮询，并在 UI 明确标注「轮询更新」）。
+- 切换默认数据源仅影响交易对搜索目录和新建打开的交易对，已打开的旧数据源标签页与画线保持原样并继续按 `venue` 路由。`mock-provider.ts` 只保留为演示开发源，正常界面不回退到模拟数据。
 
 `Candle` 含基础币成交量。解析层检查 OHLC、成交量、时间戳并排序去重；状态层按事件时间及累计成交量拒绝旧消息。`startCandleFeed` 在加载快照期间缓冲实时事件，重连从最后 K 线向前分页补齐，再合并缓冲。重试包含超时、指数退避和 Retry-After 冷却，停止后迟到结果不能触及图表。向左浏览采用独立历史分页，前插后平移逻辑可见范围保持位置。
 
@@ -46,17 +50,20 @@ V1 每个工作区对同一交易对只保留一个标签页，重复打开时�
 
 现有插件锚点包含 `logical`，未来空白区锚点可能没有 `time`。**不能把插件原始 JSON 直接当作跨设备协议**：逻辑索引会随着历史范围、周期和数据补齐变化。适配器需转换为 UTC 时间 + 价格；无时间锚点根据原始数据边界与周期换算目标时间，跨周期恢复时重新投影到新数据的逻辑位置。必须测试未来锚点、非整根 K 线锚点和历史补齐，避免画线漂移。
 
-## 云同步协议与单文件迁移
+## 云同步协议与一体化本机存储
 
-当前已实现基于 HTTPS/HTTP REST 的单人自托管同步与本机离线优先（Local-First）引擎：
+当前已实现**单服务一体化本机存储**与基于 HTTPS/HTTP REST 的自托管远程同步引擎（Local-First），并在独立「设置」页统一管理数据源、存储服务和数据导入导出：
 
-1. 客户端在「云同步与数据迁移」弹窗配置自托管服务地址（单容器同源部署可留空自动使用当前来源）和 `SYNC_TOKEN`；令牌仅保存在本机浏览器存储中，不写日志、不提交仓库、不打入前端构建产物。
-2. 本机修改始终先落盘，再写入持久化在 IndexedDB（隐私模式下自动回退 `localStorage`）的待同步队列 `outbox`，附带 `mutationId`、`deviceId`、`baseRevision`；仅在服务端确认后才显示“已同步”。服务器临时关机时客户端自动进入离线模式，继续使用本机数据并在服务端恢复后自动补推。
-3. 服务端在 SQLite `BEGIN IMMEDIATE` 事务内核对 `mutationId` 幂等记录与 `baseRevision` 乐观并发版本：写入成功则递增 `revision` 并在同一事务中持久化 `sync_mutations` 响应；陈旧 `baseRevision` 返回 HTTP 409 与服务端最新版本，客户端保留冲突项由用户逐项选择“保留本机”或“采用服务端”，禁止按客户端时间戳静默整份覆盖。
-4. 每个 SQLite 数据库在首次初始化时生成稳定的 `store_id` 写入 `store_meta`。将 `terminal.db` 通过在线热备（`VACUUM INTO`）迁移到电脑运行时 `store_id` 保持一致，同步无缝衔接；若切换到全新空库或旧库，客户端检测到 `store_id` 变化会停止自动覆盖，弹窗由用户明确选择“合并两端 / 以本机覆盖服务端 / 以服务端覆盖本机”。
-5. 即使服务端完全离线，客户端仍支持离线导出/导入带 `schemaVersion` 校验的完整 JSON 快照（覆盖交易对周期、画线与墓碑、指标、常用周期及画线默认样式）。
+1. **一体化启动与默认本机存储**：
+   - 开发态 `pnpm dev:terminal` 通过 `apps/terminal-web/vite.config.mjs` 内嵌挂载 `services/sync-api` 路由处理器；本机日常运行 `pnpm start:terminal` 自动托管 `apps/terminal-web/dist/` 与本机 SQLite（默认 `deploy/terminal/data/terminal.db`），均只需启动一个服务进程。
+   - 服务端区分两种鉴权模式：当仅绑定本机回环地址（`127.0.0.1` / `localhost` / `::1`）且未启用口令时进入严格同源回环模式（`authentication: 'local'`：校验回环来源、回环 `Host` 防 DNS Rebinding、拒绝 `X-Forwarded-*` 代理头、关闭通配 CORS、校验 `Sec-Fetch-Site` 与 `X-Terminal-Local: 1` 请求头），前端首次启动自动探测并默认启用本机存储，零配置开箱即用；当绑定非回环地址（如 `0.0.0.0`）或配置 `SYNC_TOKEN` 时强制进入 Bearer Token 常量时间校验（`authentication: 'token'`）。
+2. 客户端可在「设置 → 存储服务」中自由切换「本机内置存储（默认）」或「自定义远程存储服务」（配置服务地址和 `SYNC_TOKEN`）；令牌仅保存在本机浏览器存储中，不写日志、不提交仓库、不打入前端构建产物。
+3. 本机修改始终先落盘，再写入持久化在 IndexedDB（隐私模式下自动回退 `localStorage`）的待同步队列 `outbox`，附带 `mutationId`、`deviceId`、`baseRevision`；仅在服务端确认后才显示“已同步”。服务器临时关机时客户端自动进入离线模式，继续使用本机数据并在服务端恢复后自动补推。
+4. 服务端在 SQLite `BEGIN IMMEDIATE` 事务内核对 `mutationId` 幂等记录与 `baseRevision` 乐观并发版本：写入成功则递增 `revision` 并在同一事务中持久化 `sync_mutations` 响应；陈旧 `baseRevision` 返回 HTTP 409 与服务端最新版本，客户端保留冲突项由用户逐项选择“保留本机”或“采用服务端”，禁止按客户端时间戳静默整份覆盖。
+5. 每个 SQLite 数据库在首次初始化时生成稳定的 `store_id` 写入 `store_meta`。将 `terminal.db` 通过在线热备（`VACUUM INTO`）迁移到电脑运行时 `store_id` 保持一致，同步无缝衔接；若切换到全新空库或旧库，客户端检测到 `store_id` 变化会停止自动覆盖，弹窗由用户明确选择“合并两端 / 以本机覆盖服务端 / 以服务端覆盖本机”。
+6. 即使服务端完全离线，客户端仍支持离线导出/导入带 `schemaVersion` 校验的完整 JSON 快照（覆盖交易对周期、画线与墓碑、指标、常用周期及画线默认样式）。
 
-当前已实现的接口职责如下（除健康检查和能力声明外均需 `Authorization: Bearer <SYNC_TOKEN>`）：
+当前已实现的接口职责如下（除健康检查和能力声明外，远程/口令模式需 `Authorization: Bearer <SYNC_TOKEN>`，本机同源回环模式校验回环来源、`Host`、`Sec-Fetch-Site` 与 `X-Terminal-Local: 1`）：
 
 | 接口 | 职责 |
 | --- | --- |

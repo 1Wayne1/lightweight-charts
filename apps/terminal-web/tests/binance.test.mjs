@@ -248,3 +248,65 @@ test('manual retry bypasses local backoff and network TypeError surfaces a clear
 		assert.equal(f.snapshots.length, 1);
 	} finally { f.feed.stop(); }
 });
+
+test('HTTP 418 parses banned-until timestamp and IP from JSON body even without Retry-After header', async () => {
+	const banUntil = Date.now() + 900_000;
+	let calls = 0;
+	const provider = new BinanceProvider(defaultEndpoints, async () => {
+		calls++;
+		return new Response(
+			JSON.stringify({ code: -1003, msg: `Way too many requests; IP(103.151.173.208) banned until ${banUntil}. Please use the websocket for live updates to avoid bans.` }),
+			{ status: 418, headers: { 'Content-Type': 'application/json' } },
+		);
+	});
+	await assert.rejects(
+		provider.getCandles(perpetual, '1h'),
+		error => error instanceof MarketDataError && error.isIpBan && error.retryAfterMs >= 800_000 && /103\.151\.173\.208/.test(error.message) && /418/.test(error.message),
+	);
+	// Subsequent candle and quote requests on the same banned market are blocked locally without hammering Binance.
+	await assert.rejects(provider.getCandles(perpetual, '1h'), error => error instanceof MarketDataError && error.isIpBan);
+	await assert.rejects(provider.getQuote(perpetual), error => error instanceof MarketDataError && error.isIpBan);
+	assert.equal(calls, 1);
+});
+
+test('spot quote 429 cooldown does not block chart klines, and spot getQuotes batches symbols in one request', async () => {
+	const urls = [];
+	const provider = new BinanceProvider(defaultEndpoints, async url => {
+		const target = new URL(url);
+		urls.push(target);
+		if (target.pathname.endsWith('/ticker/24hr') && target.searchParams.has('symbol')) {
+			return new Response('', { status: 429, headers: { 'Retry-After': '30' } });
+		}
+		if (target.pathname.endsWith('/ticker/24hr') && target.searchParams.has('symbols')) {
+			return new Response(JSON.stringify([
+				{ symbol: 'BTCUSDT', lastPrice: '67000', priceChange: '100', priceChangePercent: '0.15', highPrice: '68000', lowPrice: '66000', closeTime: time * 1000 },
+				{ symbol: 'ETHUSDT', lastPrice: '3200', priceChange: '20', priceChangePercent: '0.63', highPrice: '3300', lowPrice: '3100', closeTime: time * 1000 },
+			]));
+		}
+		return new Response(JSON.stringify([row()]));
+	});
+
+	// Batch spot quotes in one call.
+	const batch = await provider.getQuotes([spot, { ...spot, symbol: 'ETH-USDT' }]);
+	assert.equal(batch.get(instrumentKey(spot))?.price, 67000);
+	assert.equal(batch.get('binance:spot:ETH-USDT')?.price, 3200);
+	assert.equal(urls.length, 1);
+	assert.equal(urls[0].searchParams.get('symbols'), '["BTCUSDT","ETHUSDT"]');
+
+	// Aux quote 429 does not lock out chart klines.
+	await assert.rejects(provider.getQuote(spot), error => error instanceof MarketDataError && !error.isIpBan);
+	const candles = await provider.getCandles(spot, '1m');
+	assert.equal(candles.length, 1);
+});
+
+test('initial websocket open does not trigger a duplicate REST snapshot after initial snapshot succeeded', async () => {
+	let calls = 0;
+	const f = sourceFixture(async () => { calls++; return [bar()]; });
+	try {
+		await drain();
+		assert.equal(calls, 1);
+		f.observer.onOpen();
+		await drain();
+		assert.equal(calls, 1);
+	} finally { f.feed.stop(); }
+});

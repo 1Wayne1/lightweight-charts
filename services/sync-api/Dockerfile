@@ -1,4 +1,4 @@
-# Single-container build: builds lightweight-charts + terminal-web + bundles sync-api with built-in node:sqlite.
+# Single-container build: builds lightweight-charts + terminal-web + bundles sync-api with built-in node:sqlite and ws relay.
 FROM node:24-alpine AS builder
 WORKDIR /build
 RUN corepack enable
@@ -15,14 +15,17 @@ COPY packages/lwc-toolkit ./packages/lwc-toolkit
 COPY packages/lwc-plugin-drawing-tools ./packages/lwc-plugin-drawing-tools
 COPY packages/terminal-domain ./packages/terminal-domain
 COPY apps/terminal-web ./apps/terminal-web
-RUN pnpm build:terminal
+COPY services/sync-api ./services/sync-api
+RUN pnpm build:terminal && pnpm --filter @terminal/sync-api deploy --legacy --prod /deploy-sync
 
 FROM node:24-alpine
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080 DB_PATH=/data/terminal.db STATIC_DIR=/app/public
 WORKDIR /app
 RUN mkdir -p /data && chown node:node /data
-COPY --chown=node:node services/sync-api/src ./src
-COPY --chown=node:node services/sync-api/migrations ./migrations
+COPY --from=builder --chown=node:node /deploy-sync/package.json ./package.json
+COPY --from=builder --chown=node:node /deploy-sync/node_modules ./node_modules
+COPY --from=builder --chown=node:node /deploy-sync/src ./src
+COPY --from=builder --chown=node:node /deploy-sync/migrations ./migrations
 COPY --from=builder --chown=node:node /build/apps/terminal-web/dist ./public
 VOLUME ["/data"]
 USER node

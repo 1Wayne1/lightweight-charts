@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { closeTab, emptyWorkspace, instrumentKey, openInstrument, parseInstrumentKey, parseSyncSnapshot, parseWorkspace, parseWorkspaceTabsSnapshot, setTimeframe } from '../src/index';
+import { closeTab, emptyWorkspace, instrumentKey, moveTab, openInstrument, parseInstrumentKey, parseSyncSnapshot, parseWorkspace, parseWorkspaceTabsSnapshot, setTimeframe } from '../src/index';
 
 const btc = { venue: 'demo', market: 'spot', symbol: 'BTC-USDT' } as const;
 const eth = { ...btc, symbol: 'ETH-USDT' };
@@ -37,6 +37,37 @@ void test('closing inactive tab keeps focus; closing active tab picks its neighb
 	const state = openInstrument(openInstrument(emptyWorkspace(), btc), eth);
 	assert.equal(closeTab(state, instrumentKey(btc)).activeTabId, instrumentKey(eth));
 	assert.equal(closeTab(state, instrumentKey(eth)).activeTabId, instrumentKey(btc));
+});
+
+void test('reordering keeps chart identity and isolated preferences through persistence, close and reopen', () => {
+	const perpetual = { ...btc, market: 'perpetual' } as const;
+	let state = openInstrument(openInstrument(openInstrument(emptyWorkspace(), btc), eth), perpetual);
+	state = setTimeframe(setTimeframe(state, instrumentKey(btc), '4h'), instrumentKey(eth), '15m');
+	const originalIds = state.tabs.map(tab => tab.id);
+	const moved = moveTab(state, instrumentKey(perpetual), 0);
+	assert.deepEqual(moved.tabs.map(tab => tab.id), [originalIds[2], originalIds[0], originalIds[1]]);
+	assert.deepEqual(state.tabs.map(tab => tab.id), originalIds, 'Input is immutable');
+	assert.equal(moved.activeTabId, state.activeTabId);
+	assert.equal(moved.preferences, state.preferences);
+	const restored = parseWorkspace(JSON.parse(JSON.stringify(moved)));
+	assert.deepEqual(restored, moved);
+	assert.deepEqual(moveTab(restored, originalIds[2], 2).tabs.map(tab => tab.id), originalIds);
+	const duplicate = openInstrument(restored, btc);
+	assert.deepEqual(duplicate.tabs, restored.tabs);
+	assert.equal(duplicate.activeTabId, instrumentKey(btc));
+	const reopened = openInstrument(closeTab(duplicate, instrumentKey(btc)), btc);
+	assert.equal(reopened.preferences[instrumentKey(btc)].timeframe, '4h');
+	assert.equal(reopened.preferences[instrumentKey(eth)].timeframe, '15m');
+	assert.equal(reopened.preferences[instrumentKey(perpetual)].timeframe, '1h');
+	assert.equal(closeTab(restored, instrumentKey(perpetual)).activeTabId, instrumentKey(btc));
+});
+
+void test('invalid or unchanged tab moves leave the workspace untouched', () => {
+	const state = openInstrument(openInstrument(emptyWorkspace(), btc), eth);
+	for (const index of [-1, 2, .5, NaN, Infinity, 0]) assert.equal(moveTab(state, instrumentKey(btc), index), state);
+	assert.equal(moveTab(state, 'missing', 1), state);
+	const empty = emptyWorkspace();
+	assert.equal(moveTab(empty, instrumentKey(btc), 0), empty);
 });
 
 void test('untrusted snapshots reject unsupported versions, dangling references and duplicates', () => {

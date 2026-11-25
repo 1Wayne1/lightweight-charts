@@ -21,6 +21,7 @@ import {
 	pushPreference,
 	pushSetting,
 	type FetchLike,
+	type SyncAuth,
 } from './client';
 import type { SyncStorageAdapter } from './storage';
 
@@ -29,13 +30,34 @@ const OUTBOX_KEY = 'outbox';
 const REVISIONS_KEY = 'revisions';
 const CONFLICTS_KEY = 'conflicts';
 
+export type SyncStorageMode = 'local' | 'remote' | 'disabled';
+
 export interface SyncConfig {
 	enabled: boolean;
+	mode: SyncStorageMode;
 	serverUrl: string;
 	token: string;
 	deviceId: string;
 	lastStoreId?: string;
 	lastSyncedAt?: string;
+}
+
+export interface LocalServiceInfo {
+	checked: boolean;
+	available: boolean;
+	authMode: 'local' | 'token' | null;
+	storeId?: string;
+	marketRelayBinance: boolean;
+}
+
+export interface MarketRelayTarget {
+	ready: boolean;
+	checking: boolean;
+	baseUrl: string;
+	auth: SyncAuth;
+	source: 'local' | 'remote';
+	needsToken?: boolean;
+	reason?: string;
 }
 
 export interface SyncRevisions {
@@ -66,6 +88,7 @@ export interface SyncViewState {
 	conflicts: readonly SyncConflictItem[];
 	storeMismatch: StoreMismatchState | null;
 	config: SyncConfig;
+	localService: LocalServiceInfo;
 }
 
 export interface SyncHostAdapter {
@@ -124,7 +147,8 @@ function isSnapshotEmpty(snapshot: SyncSnapshot): boolean {
 
 /**
  * Local-first sync engine backed by persistent outbox (IndexedDB) and SQLite server.
- * Never claims "已同步" before server confirmation and never silently overwrites on 409 or store mismatch.
+ * Auto-connects to the built-in same-origin local storage service by default when available,
+ * while retaining full custom remote storage configuration, 409 conflict protection, and store_id guards.
  */
 export class SyncEngine {
 	private config: SyncConfig;
@@ -133,7 +157,8 @@ export class SyncEngine {
 	private conflicts: SyncConflictItem[] = [];
 	private storeMismatch: StoreMismatchState | null = null;
 	private status: SyncStatusState = 'disabled';
-	private message = '云同步未启用（数据保存在本机）';
+	private message = '仅浏览器缓存';
+	private localService: LocalServiceInfo = { checked: false, available: false, authMode: null, marketRelayBinance: false };
 	private initialized = false;
 	private activeSync: Promise<void> | undefined;
 	private scheduledSync: ReturnType<typeof setTimeout> | undefined;
@@ -151,6 +176,7 @@ export class SyncEngine {
 		this.fallbackOrigin = options?.fallbackOrigin;
 		this.config = {
 			enabled: false,
+			mode: 'disabled',
 			serverUrl: '',
 			token: '',
 			deviceId: makeId(),
@@ -160,10 +186,25 @@ export class SyncEngine {
 	async init(): Promise<void> {
 		if (this.initialized) return;
 		this.initialized = true;
-		const savedConfig = await this.storage.get<SyncConfig>(CONFIG_KEY);
+		const savedConfig = await this.storage.get<Partial<SyncConfig>>(CONFIG_KEY);
+		const isFresh = !savedConfig || typeof savedConfig.deviceId !== 'string';
+		const isLegacyUnconfigured = Boolean(
+			savedConfig &&
+			savedConfig.mode === undefined &&
+			!savedConfig.enabled &&
+			!savedConfig.serverUrl &&
+			!savedConfig.token &&
+			!savedConfig.lastStoreId,
+		);
+
 		if (savedConfig && typeof savedConfig.deviceId === 'string') {
+			const enabled = Boolean(savedConfig.enabled);
+			const mode: SyncStorageMode = savedConfig.mode === 'local' || savedConfig.mode === 'remote' || savedConfig.mode === 'disabled'
+				? savedConfig.mode
+				: (enabled ? 'remote' : 'disabled');
 			this.config = {
-				enabled: Boolean(savedConfig.enabled),
+				enabled,
+				mode,
 				serverUrl: typeof savedConfig.serverUrl === 'string' ? savedConfig.serverUrl : '',
 				token: typeof savedConfig.token === 'string' ? savedConfig.token : '',
 				deviceId: savedConfig.deviceId,
@@ -186,11 +227,130 @@ export class SyncEngine {
 		const savedConflicts = await this.storage.get<SyncConflictItem[]>(CONFLICTS_KEY);
 		if (Array.isArray(savedConflicts)) this.conflicts = savedConflicts;
 
+		if (this.fallbackOrigin) {
+			await this.probeLocalService();
+			if ((isFresh || isLegacyUnconfigured) && this.localService.available && this.localService.authMode === 'local') {
+				this.config = {
+					...this.config,
+					enabled: true,
+					mode: 'local',
+					serverUrl: '',
+				};
+				await this.storage.set(CONFIG_KEY, this.config);
+			}
+		}
+
 		this.refreshIdleStatus();
 		this.emit();
 		if (this.config.enabled) {
 			void this.syncNow();
 		}
+	}
+
+	async probeLocalService(): Promise<LocalServiceInfo> {
+		if (!this.fallbackOrigin) {
+			this.localService = { checked: true, available: false, authMode: null, marketRelayBinance: false };
+			return { ...this.localService };
+		}
+		try {
+			const caps = await fetchCapabilities(this.fallbackOrigin, this.fetcher, 3000);
+			this.localService = {
+				checked: true,
+				available: true,
+				authMode: caps.authentication,
+				storeId: caps.storeId,
+				marketRelayBinance: Boolean(caps.marketRelay?.binance),
+			};
+		} catch {
+			this.localService = { checked: true, available: false, authMode: null, marketRelayBinance: false };
+		}
+		return { ...this.localService };
+	}
+
+	getMarketRelayTarget(): MarketRelayTarget {
+		if (this.config.enabled && this.config.mode === 'remote') {
+			try {
+				const baseUrl = this.resolvedServerUrl();
+				if (this.config.token.length < 8) {
+					return {
+						ready: false,
+						checking: false,
+						baseUrl,
+						auth: { mode: 'token', token: '' },
+						source: 'remote',
+						needsToken: true,
+						reason: '当前远程服务需要访问口令，请在「设置 → 存储服务」填写 SYNC_TOKEN',
+					};
+				}
+				return {
+					ready: true,
+					checking: false,
+					baseUrl,
+					auth: { mode: 'token', token: this.config.token },
+					source: 'remote',
+				};
+			} catch (error) {
+				return {
+					ready: false,
+					checking: false,
+					baseUrl: '',
+					auth: { mode: 'token', token: '' },
+					source: 'remote',
+					reason: error instanceof Error ? error.message : '远程存储服务地址无效',
+				};
+			}
+		}
+
+		if (this.config.enabled && this.config.mode === 'local' && this.fallbackOrigin) {
+			return {
+				ready: true,
+				checking: false,
+				baseUrl: this.resolvedServerUrl(),
+				auth: { mode: 'local' },
+				source: 'local',
+			};
+		}
+
+		if (this.fallbackOrigin && !this.localService.checked) {
+			return {
+				ready: false,
+				checking: true,
+				baseUrl: this.fallbackOrigin,
+				auth: { mode: 'local' },
+				source: 'local',
+				reason: '正在连接当前服务的行情中继…',
+			};
+		}
+
+		if (this.localService.available && this.fallbackOrigin) {
+			if (this.localService.authMode === 'local') {
+				return {
+					ready: true,
+					checking: false,
+					baseUrl: normalizeServerUrl('', this.fallbackOrigin),
+					auth: { mode: 'local' },
+					source: 'local',
+				};
+			}
+			return {
+				ready: false,
+				checking: false,
+				baseUrl: normalizeServerUrl('', this.fallbackOrigin),
+				auth: { mode: 'token', token: '' },
+				source: 'remote',
+				needsToken: true,
+				reason: '当前服务已开启口令保护，请在「设置 → 存储服务」填写访问口令以启用服务器行情转发与数据同步',
+			};
+		}
+
+		return {
+			ready: false,
+			checking: false,
+			baseUrl: '',
+			auth: { mode: 'local' },
+			source: 'local',
+			reason: '未检测到可用的中继服务；请通过电脑/服务器地址访问，或在「设置 → 数据源」切换为浏览器直连',
+		};
 	}
 
 	subscribe(listener: (view: SyncViewState) => void): () => void {
@@ -208,6 +368,7 @@ export class SyncEngine {
 			conflicts: [...this.conflicts],
 			storeMismatch: this.storeMismatch,
 			config: { ...this.config },
+			localService: { ...this.localService },
 		};
 	}
 
@@ -226,15 +387,30 @@ export class SyncEngine {
 	}
 
 	private resolvedServerUrl(): string {
+		if (this.config.mode === 'local') {
+			return normalizeServerUrl('', this.fallbackOrigin);
+		}
 		return normalizeServerUrl(this.config.serverUrl, this.fallbackOrigin);
 	}
 
+	private activeAuth(): SyncAuth {
+		if (this.config.mode === 'local') return { mode: 'local' };
+		return { mode: 'token', token: this.config.token };
+	}
+
+	private modeLabel(): string {
+		return this.config.mode === 'local' ? '本机存储' : '远程存储';
+	}
+
 	private refreshIdleStatus(): void {
-		if (!this.config.enabled) {
+		if (!this.config.enabled || this.config.mode === 'disabled') {
 			this.status = 'disabled';
-			this.message = '云同步未启用（数据保存在本机）';
+			this.message = this.localService.available && this.localService.authMode === 'token'
+				? '同源存储需填写口令'
+				: '仅浏览器缓存';
 			return;
 		}
+		const label = this.modeLabel();
 		if (this.storeMismatch) {
 			this.status = 'store_mismatch';
 			this.message = '检测到不同步存储库，请确认合并或覆盖方式';
@@ -247,35 +423,66 @@ export class SyncEngine {
 		}
 		if (this.outbox.length > 0) {
 			this.status = 'pending';
-			this.message = `有 ${this.outbox.length} 项本机修改待同步`;
+			this.message = `${label} · ${this.outbox.length} 项待同步`;
 			return;
 		}
 		this.status = 'synced';
 		this.message = this.config.lastSyncedAt
-			? `已同步 · ${new Date(this.config.lastSyncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
-			: '已连接同步服务';
+			? `${label} · 已同步 ${new Date(this.config.lastSyncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`
+			: `${label} · 已连接`;
 	}
 
-	async testConnection(serverUrl: string, token: string): Promise<{ storeId: string; staticWeb: boolean }> {
-		const base = normalizeServerUrl(serverUrl, this.fallbackOrigin);
+	async testConnection(
+		serverUrl: string,
+		token: string,
+		authMode: 'local' | 'token' = 'token',
+	): Promise<{ storeId: string; staticWeb: boolean; authentication: 'local' | 'token' }> {
+		const base = authMode === 'local'
+			? normalizeServerUrl('', this.fallbackOrigin)
+			: normalizeServerUrl(serverUrl, this.fallbackOrigin);
 		const caps = await fetchCapabilities(base, this.fetcher);
-		// Verify token by reading snapshot (never trusts capabilities alone).
-		await fetchSnapshot(base, token.trim(), this.fetcher);
-		return { storeId: caps.storeId, staticWeb: caps.staticWeb };
+		if (authMode === 'local') {
+			if (caps.authentication !== 'local') {
+				throw new SyncClientError('auth', '当前服务已开启访问口令保护，请选择远程/口令模式并填写 SYNC_TOKEN');
+			}
+			await fetchSnapshot(base, { mode: 'local' }, this.fetcher);
+		} else {
+			await fetchSnapshot(base, { mode: 'token', token: token.trim() }, this.fetcher);
+		}
+		return { storeId: caps.storeId, staticWeb: caps.staticWeb, authentication: caps.authentication };
 	}
 
-	async configure(next: { serverUrl: string; token: string; enabled: boolean }): Promise<void> {
+	async useLocalStorage(): Promise<void> {
+		const probe = await this.probeLocalService();
+		if (!probe.available) {
+			throw new SyncClientError('network', '未检测到同源本机存储服务，请通过 pnpm dev:terminal 或 pnpm start:terminal 启动');
+		}
+		if (probe.authMode !== 'local') {
+			throw new SyncClientError('auth', '当前同源服务已开启访问口令保护，请在自定义存储服务中填写访问口令（地址留空即可）');
+		}
+		await this.configure({ serverUrl: '', token: this.config.token, enabled: true, mode: 'local' });
+	}
+
+	async configure(next: { serverUrl: string; token: string; enabled: boolean; mode?: SyncStorageMode }): Promise<void> {
 		const trimmedToken = next.token.trim();
-		const cleanedUrl = next.serverUrl.trim().replace(/\/+$/, '');
+		const nextMode: SyncStorageMode = !next.enabled
+			? 'disabled'
+			: (next.mode ?? 'remote');
+		const cleanedUrl = nextMode === 'local' ? '' : next.serverUrl.trim().replace(/\/+$/, '');
 		if (next.enabled) {
-			normalizeServerUrl(cleanedUrl, this.fallbackOrigin);
-			if (trimmedToken.length < 8) {
-				throw new SyncClientError('invalid', '访问口令长度至少为 8 位');
+			if (nextMode === 'local') {
+				normalizeServerUrl('', this.fallbackOrigin);
+			} else {
+				normalizeServerUrl(cleanedUrl, this.fallbackOrigin);
+				if (trimmedToken.length < 8) {
+					throw new SyncClientError('invalid', '访问口令长度至少为 8 位');
+				}
 			}
 		}
-		const urlChanged = cleanedUrl !== this.config.serverUrl;
+		const targetChanged = cleanedUrl !== this.config.serverUrl || nextMode !== this.config.mode;
 		this.config = {
 			...this.config,
+			mode: nextMode,
 			serverUrl: cleanedUrl,
 			token: trimmedToken,
 			enabled: next.enabled,
@@ -284,7 +491,7 @@ export class SyncEngine {
 			this.storeMismatch = null;
 			clearTimeout(this.scheduledSync);
 			this.scheduledSync = undefined;
-		} else if (urlChanged) {
+		} else if (targetChanged) {
 			this.storeMismatch = null;
 		}
 		this.refreshIdleStatus();
@@ -404,15 +611,15 @@ export class SyncEngine {
 
 	private async runSync(): Promise<void> {
 		this.status = 'syncing';
-		this.message = '正在同步…';
+		this.message = `${this.modeLabel()} · 同步中…`;
 		this.emit();
 
 		try {
 			const baseUrl = this.resolvedServerUrl();
-			const token = this.config.token;
-			const snapshot = await fetchSnapshot(baseUrl, token, this.fetcher);
+			const auth = this.activeAuth();
+			const snapshot = await fetchSnapshot(baseUrl, auth, this.fetcher);
 
-			// Detect server DB switch (e.g. switched from cloud server to a freshly started PC SQLite DB).
+			// Detect server DB switch (e.g. switched between local SQLite and remote server DB).
 			if (this.config.lastStoreId && this.config.lastStoreId !== snapshot.storeId) {
 				this.storeMismatch = {
 					reason: 'store_changed',
@@ -430,7 +637,7 @@ export class SyncEngine {
 			if (!this.config.lastStoreId) {
 				const localSnapshot = this.host.exportLocalSnapshot();
 				if (isSnapshotEmpty(snapshot)) {
-					const seeded = await importRemoteSnapshot(baseUrl, token, localSnapshot, 'merge', this.fetcher);
+					const seeded = await importRemoteSnapshot(baseUrl, auth, localSnapshot, 'merge', this.fetcher);
 					this.applySnapshotToLocal(seeded, false);
 					this.config.lastStoreId = seeded.storeId;
 					this.config.lastSyncedAt = new Date().toISOString();
@@ -464,7 +671,7 @@ export class SyncEngine {
 				const item = this.outbox[i];
 				try {
 					if (item.kind === 'preference') {
-						const res = await pushPreference(baseUrl, token, item.instrumentKey, {
+						const res = await pushPreference(baseUrl, auth, item.instrumentKey, {
 							mutationId: item.mutationId,
 							deviceId: this.config.deviceId,
 							baseRevision: item.baseRevision,
@@ -476,7 +683,7 @@ export class SyncEngine {
 							this.recordConflict(item, res.conflict);
 						}
 					} else if (item.kind === 'drawing') {
-						const res = await pushDrawing(baseUrl, token, item.instrumentKey, item.drawingId, {
+						const res = await pushDrawing(baseUrl, auth, item.instrumentKey, item.drawingId, {
 							mutationId: item.mutationId,
 							deviceId: this.config.deviceId,
 							baseRevision: item.baseRevision,
@@ -489,7 +696,7 @@ export class SyncEngine {
 							this.recordConflict(item, res.conflict);
 						}
 					} else {
-						const res = await pushSetting(baseUrl, token, item.key, {
+						const res = await pushSetting(baseUrl, auth, item.key, {
 							mutationId: item.mutationId,
 							deviceId: this.config.deviceId,
 							baseRevision: item.baseRevision,
@@ -524,8 +731,8 @@ export class SyncEngine {
 				} else if (error.kind === 'network') {
 					this.status = 'offline';
 					this.message = this.outbox.length > 0
-						? `离线 · ${this.outbox.length} 项待同步（已存本机）`
-						: '离线 · 使用本机数据';
+						? `${this.modeLabel()}离线 · ${this.outbox.length} 项待同步`
+						: `${this.modeLabel()}离线 · 使用浏览器缓存`;
 				} else {
 					this.status = 'error';
 					this.message = error.message;
@@ -654,7 +861,7 @@ export class SyncEngine {
 
 		try {
 			const baseUrl = this.resolvedServerUrl();
-			const token = this.config.token;
+			const auth = this.activeAuth();
 			if (choice === 'pull_replace') {
 				this.host.replaceLocalFromSnapshot(mismatch.serverSnapshot);
 				this.resetRevisionsFromSnapshot(mismatch.serverSnapshot);
@@ -662,7 +869,7 @@ export class SyncEngine {
 			} else {
 				const localSnapshot = this.host.exportLocalSnapshot();
 				const mode = choice === 'push_replace' ? 'replace' : 'merge';
-				const result = await importRemoteSnapshot(baseUrl, token, localSnapshot, mode, this.fetcher);
+				const result = await importRemoteSnapshot(baseUrl, auth, localSnapshot, mode, this.fetcher);
 				this.host.replaceLocalFromSnapshot(result);
 				this.resetRevisionsFromSnapshot(result);
 				this.config.lastStoreId = result.storeId;
@@ -701,7 +908,7 @@ export class SyncEngine {
 		const snapshot = parseSyncSnapshot(raw);
 		if (this.config.enabled && !this.storeMismatch) {
 			try {
-				const updated = await importRemoteSnapshot(this.resolvedServerUrl(), this.config.token, snapshot, mode, this.fetcher);
+				const updated = await importRemoteSnapshot(this.resolvedServerUrl(), this.activeAuth(), snapshot, mode, this.fetcher);
 				this.host.replaceLocalFromSnapshot(updated);
 				this.resetRevisionsFromSnapshot(updated);
 				this.config.lastStoreId = updated.storeId;
@@ -733,9 +940,12 @@ export class SyncEngine {
 	}
 
 	async downloadBackup(): Promise<{ blob: Blob; filename: string }> {
-		if (!this.config.enabled || !this.config.token) {
-			throw new SyncClientError('invalid', '请先配置并启用同步服务');
+		if (!this.config.enabled) {
+			throw new SyncClientError('invalid', '请先启用本机存储或连接远程存储服务');
 		}
-		return downloadSqliteBackup(this.resolvedServerUrl(), this.config.token, this.fetcher);
+		if (this.config.mode === 'remote' && !this.config.token) {
+			throw new SyncClientError('invalid', '请先填写存储服务访问口令');
+		}
+		return downloadSqliteBackup(this.resolvedServerUrl(), this.activeAuth(), this.fetcher);
 	}
 }

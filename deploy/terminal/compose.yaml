@@ -11,6 +11,11 @@ services:
       DB_PATH: /data/terminal.db
       STATIC_DIR: /app/public
       CORS_ORIGIN: ${CORS_ORIGIN:-*}
+      MARKET_PROXY_URL: ${MARKET_PROXY_URL:-}
+      BINANCE_SPOT_REST: ${BINANCE_SPOT_REST:-}
+      BINANCE_PERPETUAL_REST: ${BINANCE_PERPETUAL_REST:-}
+      BINANCE_SPOT_WS: ${BINANCE_SPOT_WS:-}
+      BINANCE_PERPETUAL_WS: ${BINANCE_PERPETUAL_WS:-}
     ports:
       - "${SYNC_BIND:-127.0.0.1}:${SYNC_PORT:-8080}:8080"
     volumes:
