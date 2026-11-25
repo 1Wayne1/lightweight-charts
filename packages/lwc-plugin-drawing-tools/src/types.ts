@@ -18,6 +18,22 @@ export type MagnetMode = 'off' | 'weak' | 'strong';
 
 export type DrawingTheme = 'dark' | 'light';
 
+export type WaveDegree =
+	| 'primary'
+	| 'intermediate'
+	| 'minor'
+	| 'minute'
+	| 'minuette'
+	| 'subminuette';
+
+export interface EditHandle {
+	id: string;
+	point: ScreenPoint;
+	anchorIndex?: number;
+	cursor?: string;
+	axisAnchors?: readonly number[];
+}
+
 export interface AnchorPoint {
 	/**
 	 * Primary horizontal coordinate (logical bar index).
@@ -82,6 +98,13 @@ export interface DrawingStyleOptions {
 	/** Normalized viewport location for anchored text only. */
 	anchorX?: number;
 	anchorY?: number;
+	/** Elliott wave degree formatting & connector visibility. */
+	waveDegree: WaveDegree;
+	waveShowLines: boolean;
+	/** Compact stat pills when unselected (used by position tools). */
+	compactStats: boolean;
+	/** Show position stat pills even when idle (off by default, matching TradingView). */
+	alwaysShowStats: boolean;
 }
 
 export interface SerializedDrawing {
@@ -98,8 +121,9 @@ export interface DrawingSnapshot {
 
 export interface HitPart {
 	drawingId: string;
-	part: 'anchor' | 'body';
+	part: 'anchor' | 'body' | 'handle';
 	anchorIndex?: number;
+	handleId?: string;
 }
 
 export interface ToolCapabilities {
@@ -118,7 +142,7 @@ export interface ToolDefinition {
 	shortLabel: string;
 	pointCount: number;
 	group?: string;
-	creation?: 'points' | 'path' | 'freehand';
+	creation?: 'points' | 'path' | 'freehand' | 'instant-box';
 	capabilities: ToolCapabilities;
 	defaultOptions: Partial<DrawingStyleOptions>;
 }
@@ -163,12 +187,20 @@ export const BASE_DRAWING_OPTIONS: DrawingStyleOptions = {
 	riskPercent: 1,
 	deviations: 2,
 	profileRows: 24,
+	waveDegree: 'intermediate',
+	waveShowLines: true,
+	compactStats: false,
+	alwaysShowStats: false,
 };
 
 export function encodeExternalId(hit: HitPart): string {
-	return hit.part === 'anchor'
-		? `dt:${hit.drawingId}:anchor:${hit.anchorIndex ?? 0}`
-		: `dt:${hit.drawingId}:body`;
+	if (hit.part === 'anchor') {
+		return `dt:${hit.drawingId}:anchor:${hit.anchorIndex ?? 0}`;
+	}
+	if (hit.part === 'handle') {
+		return `dt:${hit.drawingId}:handle:${hit.handleId ?? ''}`;
+	}
+	return `dt:${hit.drawingId}:body`;
 }
 
 export function decodeExternalId(externalId: unknown): HitPart | null {
@@ -188,6 +220,12 @@ export function decodeExternalId(externalId: unknown): HitPart | null {
 		const anchorIndex = Number(parts[3]);
 		if (Number.isInteger(anchorIndex) && anchorIndex >= 0) {
 			return { drawingId, part: 'anchor', anchorIndex };
+		}
+	}
+	if (part === 'handle' && parts.length >= 4) {
+		const handleId = parts.slice(3).join(':');
+		if (handleId) {
+			return { drawingId, part: 'handle', handleId };
 		}
 	}
 	return null;

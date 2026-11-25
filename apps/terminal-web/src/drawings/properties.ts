@@ -1,4 +1,4 @@
-import { getToolDefinition, type DrawingManagerState, type DrawingStyleOptions } from '@tradingview/lwc-plugin-drawing-tools';
+import { flipPosition, getToolDefinition, type DrawingManagerState, type DrawingStyleOptions, type WaveDegree } from '@tradingview/lwc-plugin-drawing-tools';
 import { element, icon, iconButton, type IconName } from '../ui';
 import { drawingIcon, toolIcon } from './icons';
 import { toolLabel } from './catalog';
@@ -11,6 +11,14 @@ import './properties.css';
 
 const STYLES = ['实线', '点线', '虚线', '长虚线', '稀疏点线'];
 const DASHES = ['solid', 'dotted', 'dashed', 'dashed', 'dotted'];
+const WAVE_DEGREES: ReadonlyArray<{ value: WaveDegree; short: string; label: string }> = [
+	{ value: 'primary', short: '①', label: '主要 ①②③' },
+	{ value: 'intermediate', short: '(1)', label: '中级 (1)(2)(3)' },
+	{ value: 'minor', short: '1', label: '次级 1 2 3' },
+	{ value: 'minute', short: '[i]', label: '微级 [i][ii][iii]' },
+	{ value: 'minuette', short: '(i)', label: '细微 (i)(ii)(iii)' },
+	{ value: 'subminuette', short: 'i', label: '极微 i ii iii' },
+];
 const button = (label: string, action: () => void, className = 'drawing-button') => {
 	const node = element('button', className, label); node.type = 'button'; node.onclick = action; return node;
 };
@@ -59,6 +67,38 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		popup.style.left = `${Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8))}px`;
 		popup.style.top = `${Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8))}px`;
 	}
+	function placePopupForTrigger(trigger: HTMLElement, point?: { x: number; y: number }): void {
+		if (!popup) return;
+		if (point) {
+			placePopup(point.x, point.y);
+			return;
+		}
+		const rect = trigger.getBoundingClientRect();
+		const bounds = popup.getBoundingClientRect();
+		let x = rect.left;
+		let y = rect.bottom + 6;
+		if (dialog.open) {
+			const footerRect = dialog.querySelector<HTMLElement>('.drawing-properties-footer')?.getBoundingClientRect();
+			const clampedLeft = Math.max(8, Math.min(x, window.innerWidth - bounds.width - 8));
+			const clampedTop = Math.max(8, Math.min(y, window.innerHeight - bounds.height - 8));
+			const overlapsFooter =
+				footerRect &&
+				clampedLeft < footerRect.right &&
+				clampedLeft + bounds.width > footerRect.left &&
+				clampedTop < footerRect.bottom &&
+				clampedTop + bounds.height > footerRect.top;
+			if (overlapsFooter) {
+				const dialogRect = dialog.getBoundingClientRect();
+				if (dialogRect.right + 8 + bounds.width <= window.innerWidth - 8) {
+					x = dialogRect.right + 8;
+					y = rect.top;
+				} else if (rect.top - bounds.height - 6 >= 8) {
+					y = rect.top - bounds.height - 6;
+				}
+			}
+		}
+		placePopup(x, y);
+	}
 	function showPopup(trigger: HTMLElement, title: string, build: (body: HTMLDivElement) => void, point?: { x: number; y: number }, options?: { hideTitle?: boolean; className?: string }): void {
 		if (popupTrigger === trigger && popup) { closePopup(true); return; }
 		closePopup(); popupTrigger = trigger; trigger.setAttribute('aria-expanded', 'true');
@@ -66,7 +106,7 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		if (!options?.hideTitle) popup.append(element('div', 'drawing-popover-title', title));
 		build(popup);
 		(dialog.open ? dialog : app).append(popup);
-		const rect = trigger.getBoundingClientRect(); placePopup(point?.x ?? rect.left, point?.y ?? rect.bottom + 6);
+		placePopupForTrigger(trigger, point);
 		popup.querySelector<HTMLElement>('[aria-checked=true], button, input')?.focus();
 	}
 	function colorPicker(trigger: HTMLButtonElement, label: string, current: string, onSelect: (value: string) => void, opacity?: { value: number; max: number; onSelect: (value: number) => void }): void {
@@ -82,10 +122,7 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 					...opacity,
 					label: label === '文字颜色' ? '文字不透明度' : '不透明度',
 				} : undefined,
-				onResize: () => {
-					const rect = trigger.getBoundingClientRect();
-					placePopup(rect.left, rect.bottom + 6);
-				},
+				onResize: () => placePopupForTrigger(trigger),
 			});
 		}, undefined, { hideTitle: true, className: 'tv-color-popover' });
 	}
@@ -111,6 +148,7 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 				const row = button('', () => { closePopup(); run(); }, 'drawing-property-menu-item'); row.disabled = disabled; row.append(icon(name), element('span', '', label)); body.append(row);
 			};
 			item('settings', '设置…', () => open());
+			item('copy', '克隆', () => manager()?.cloneDrawing(drawing.id));
 			item('lock', options.locked ? '解锁' : '锁定', () => patch({ locked: !options.locked }));
 			item('eye', '隐藏', () => { patch({ visible: false }); manager()?.selectDrawing(null); });
 			item('arrowUp', '置于 K 线上方', () => patch({ zOrder: 'top' }));
@@ -196,7 +234,45 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 			}
 			const edit = action('text', profile.attached && !options.attachedText ? '添加文字' : '编辑文字', () => profile.attached ? textEditor.open(drawing, drawing.attachedTextTargets()[0]) : open('text')); edit.disabled = options.locked;
 		}
+		if (profile.wave) {
+			const currentDegree = WAVE_DEGREES.find(d => d.value === options.waveDegree) ?? WAVE_DEGREES[1];
+			const degree = button(currentDegree.short, () => showPopup(degree, '浪级样式', body => {
+				for (const choiceSpec of WAVE_DEGREES) {
+					const choice = button(choiceSpec.label, () => { closePopup(true); patch({ waveDegree: choiceSpec.value }); }, 'drawing-property-menu-item');
+					choice.setAttribute('aria-pressed', String(options.waveDegree === choiceSpec.value));
+					body.append(choice);
+				}
+			}), 'drawing-property-button drawing-text-chip');
+			degree.setAttribute('aria-label', '浪级样式'); degree.title = `浪级：${currentDegree.label}`; degree.setAttribute('aria-haspopup', 'dialog');
+			content.append(degree);
+			const showLines = action('trend', options.waveShowLines ? '隐藏波浪连线' : '显示波浪连线', () => patch({ waveShowLines: !options.waveShowLines }));
+			showLines.setAttribute('aria-pressed', String(options.waveShowLines));
+		}
+		if (profile.position) {
+			const flip = action('swap', '反转多空', () => {
+				const current = manager()?.selectedDrawing();
+				if (!current || current.options().locked || (current.type !== 'long-position' && current.type !== 'short-position')) return;
+				const flipped = flipPosition(current.type, current.points());
+				manager()?.replaceDrawing(current.id, flipped.type, flipped.points);
+			});
+			flip.disabled = options.locked;
+			const always = button('常显', () => patch({ alwaysShowStats: !options.alwaysShowStats }), 'drawing-property-button drawing-text-chip');
+			always.setAttribute('aria-label', '始终显示统计'); always.title = '开启后即使未悬浮也在图形上显示目标/止损/盈亏比'; always.setAttribute('aria-pressed', String(options.alwaysShowStats));
+			const compact = button('紧凑', () => patch({ compactStats: !options.compactStats }), 'drawing-property-button drawing-text-chip');
+			compact.setAttribute('aria-label', '紧凑统计'); compact.title = '切换紧凑统计标签'; compact.setAttribute('aria-pressed', String(options.compactStats));
+			content.append(always, compact);
+		}
+		if (profile.fibReverse) {
+			const reverse = action('swap', '反转层级', () => {
+				const current = manager()?.selectedDrawing();
+				if (!current || current.options().locked) return;
+				const pts = current.points();
+				if (pts.length >= 2) manager()?.updateDrawing(current.id, { points: [pts[1], pts[0], ...pts.slice(2)] });
+			});
+			reverse.disabled = options.locked;
+		}
 		divider(); action('settings', '绘图设置', () => open());
+		action('copy', '克隆画线', () => manager()?.cloneDrawing(drawing.id));
 		const lock = action('lock', options.locked ? '解锁画线' : '锁定画线', () => patch({ locked: !options.locked })); lock.replaceChildren(drawingIcon(options.locked ? 'lock' : 'unlock')); lock.setAttribute('aria-pressed', String(options.locked));
 		const remove = action('trash', '删除选中画线', () => manager()?.removeDrawing(drawing.id)); remove.disabled = options.locked;
 		const overflow = action('more', '更多绘图操作', () => more(overflow)); overflow.setAttribute('aria-haspopup', 'dialog');
@@ -239,13 +315,13 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 			const control = button('', () => colorPicker(control, label, draft[key], value => { draft[key] = value; swatch.style.backgroundColor = value; previewOption({ [key]: value }); }), 'drawing-settings-color');
 			control.setAttribute('aria-label', label); control.setAttribute('aria-haspopup', 'dialog'); const swatch = element('span'); swatch.style.backgroundColor = draft[key]; control.append(swatch, icon('chevron')); row(panel, label, control);
 		}
-		function selectField(panel: HTMLElement, key: 'lineStyle' | 'zOrder' | 'textAlign' | 'textPosition' | 'textOrientation', label: string, choices: readonly string[]): void {
+		function selectField(panel: HTMLElement, key: 'lineStyle' | 'zOrder' | 'textAlign' | 'textPosition' | 'textOrientation' | 'waveDegree', label: string, choices: readonly string[]): void {
 			const select = element('select'); select.setAttribute('aria-label', label); fields.set(key, select);
-			choices.forEach((name, i) => { const option = element('option', '', name); option.value = key === 'lineStyle' ? String(i) : ({ zOrder: ['top', 'normal', 'bottom'], textAlign: ['left', 'center', 'right'], textPosition: ['top', 'middle', 'bottom'], textOrientation: ['horizontal', 'vertical'] }[key])[i]; select.append(option); }); select.value = String(options[key]); row(panel, label, select);
+			choices.forEach((name, i) => { const option = element('option', '', name); option.value = key === 'lineStyle' ? String(i) : ({ zOrder: ['top', 'normal', 'bottom'], textAlign: ['left', 'center', 'right'], textPosition: ['top', 'middle', 'bottom'], textOrientation: ['horizontal', 'vertical'], waveDegree: WAVE_DEGREES.map(d => d.value) }[key])[i]; select.append(option); }); select.value = String(options[key]); row(panel, label, select);
 		}
 		if (profile.position || profile.regression || profile.volume) {
 			const inputs = tab('inputs', '输入');
-			if (profile.position) { field(inputs, 'accountSize', '账户资金', 'number', 1, 1e12); field(inputs, 'riskPercent', '风险 (%)', 'number', .01, 100); }
+			if (profile.position) { field(inputs, 'accountSize', '账户资金', 'number', 1, 1e12); field(inputs, 'riskPercent', '风险 (%)', 'number', .01, 100); field(inputs, 'alwaysShowStats', '始终显示统计', 'checkbox'); field(inputs, 'compactStats', '紧凑统计标签', 'checkbox'); }
 			if (profile.regression) field(inputs, 'deviations', '标准差倍数', 'number', .1, 10);
 			if (profile.volume) field(inputs, 'profileRows', '成交量分布行数', 'number', 4, 100, '1');
 		}
@@ -256,9 +332,13 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		if (profile.width) field(strokeControls, 'lineWidth', '线宽', 'number', .5, 32, '.5');
 		if (profile.lineStyle) selectField(strokeControls, 'lineStyle', '线型', STYLES);
 		if (profile.fill) colorField(style, 'fillColor', profile.annotation ? '背景颜色' : '填充颜色');
-		if (profile.opacity) field(style, 'fillOpacity', '填充不透明度', 'number', 0, drawing.type === 'fib-retracement' ? .18 : 1, '.01');
+		if (profile.opacity) field(style, 'fillOpacity', '填充不透明度', 'number', 0, drawing.type === 'fib-retracement' || drawing.type === 'fib-extension' ? .18 : 1, '.01');
 		if (profile.extend) { field(style, 'extendLeft', '向左延伸', 'checkbox'); if (drawing.type !== 'horizontal-ray' && drawing.type !== 'pitchfan') field(style, 'extendRight', '向右延伸', 'checkbox'); }
 		if (profile.midline) field(style, 'showMidline', '显示中线', 'checkbox');
+		if (profile.wave) {
+			selectField(style, 'waveDegree', '浪级样式', WAVE_DEGREES.map(d => d.label));
+			field(style, 'waveShowLines', '显示波浪连线', 'checkbox');
+		}
 		if (profile.labels) field(style, 'showLabels', '显示标签 / 统计', 'checkbox');
 		let levels: Array<{ value: HTMLInputElement; visible: HTMLInputElement; color: string; text: HTMLInputElement; originalText?: string }> | undefined;
 		if (profile.levels) {
@@ -373,7 +453,13 @@ export function createDrawingProperties(app: HTMLElement, overlay: HTMLElement, 
 		if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
 		event.preventDefault(); moveBar(bar.offsetLeft + (event.key === 'ArrowLeft' ? -10 : event.key === 'ArrowRight' ? 10 : 0), bar.offsetTop + (event.key === 'ArrowUp' ? -10 : event.key === 'ArrowDown' ? 10 : 0));
 	};
-	const resize = new ResizeObserver(() => { if (customPosition && !bar.hidden) moveBar(customPosition.left, customPosition.top); closePopup(); }); resize.observe(overlay);
+	const resize = new ResizeObserver(() => {
+		if (customPosition && !bar.hidden) moveBar(customPosition.left, customPosition.top);
+		if (popup) {
+			if (!popupTrigger || !popupTrigger.isConnected || overlay.clientWidth <= 0 || popupTrigger === bar) closePopup();
+			else placePopupForTrigger(popupTrigger);
+		}
+	}); resize.observe(overlay);
 	const onPointer = (event: PointerEvent) => { if (popup && event.target instanceof Node && !popup.contains(event.target) && !popupTrigger?.contains(event.target)) closePopup(); };
 	const onKey = (event: KeyboardEvent) => {
 		if (!popup) return;

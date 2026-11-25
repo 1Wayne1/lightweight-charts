@@ -255,7 +255,7 @@ test('grouped toolbar, drawing controls, persistence and responsive menus', { ti
 		assert.equal(await page.$eval('.drawing-dialog', el => el.open), false);
 		await page.setViewport({ width: 844, height: 390, isMobile: true, hasTouch: true });
 		await clickLabel('绘图工具'); await screenshot('mobile-landscape');
-		assert.ok(await page.$eval('.drawing-dialog', el => el.getBoundingClientRect().bottom <= window.innerHeight));
+		await page.waitForFunction(() => { const r = document.querySelector('.drawing-dialog')?.getBoundingClientRect(); return Boolean(r && r.bottom <= window.innerHeight); }, { timeout: 2000 });
 		// Existing shape, Fibonacci, annotation and analytical tools expose their own properties.
 		await clickLabel('关闭绘图工具'); await page.setViewport({ width: 1440, height: 1000, isMobile: false, hasTouch: false });
 		const choose = async (group, type) => { await clickLabel(`展开${group}`); await page.click(`${menu} [data-tool="${type}"]`); };
@@ -308,24 +308,43 @@ test('grouped toolbar, drawing controls, persistence and responsive menus', { ti
 		await screenshot('desktop-text-toolbar');
 		await choose('预测与测量工具', 'long-position');
 		const bounds = await page.$eval('.chart-stage', el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y }; });
-		for (const [x, y] of [[520, 400], [600, 480], [680, 320]]) await page.mouse.click(bounds.x + x, bounds.y + y);
-		await waitSaved(7); await clickLabel('绘图设置');
+		await page.mouse.click(bounds.x + 520, bounds.y + 400);
+		await waitSaved(7);
+		await clickLabel('反转多空');
+		await page.waitForFunction(key => JSON.parse(localStorage.getItem(key)).documents.at(-1).kind === 'short-position', {}, storageKey);
+		await clickLabel('反转多空');
+		await page.waitForFunction(key => JSON.parse(localStorage.getItem(key)).documents.at(-1).kind === 'long-position', {}, storageKey);
+		await clickLabel('绘图设置');
 		assert.equal(await page.$eval(`${prop} [role=tab][aria-selected=true]`, el => el.textContent), '输入');
 		await setInput('[data-field=riskPercent]', 2); await screenshot('desktop-position-settings');
 		await page.click(`${prop} button[type=submit]`);
 		await page.waitForFunction(key => JSON.parse(localStorage.getItem(key)).documents.at(-1).style.riskPercent === 2, {}, storageKey);
+		const clickSheetAction = async label => {
+			await clickLabel('图表选项');
+			const handle = await page.waitForFunction(text => {
+				const sheet = document.querySelector('.mobile-sheet.is-open');
+				if (!sheet) return false;
+				const matrix = window.getComputedStyle(sheet).transform;
+				if (matrix && matrix !== 'none' && matrix !== 'matrix(1, 0, 0, 1, 0, 0)') return false;
+				const btn = Array.from(sheet.querySelectorAll('.sheet-action')).find(el => el.textContent === text);
+				if (!btn) return false;
+				const r = btn.getBoundingClientRect();
+				return r.height > 0 && r.bottom <= window.innerHeight ? btn : false;
+			}, { timeout: 2500 }, label);
+			await handle.asElement().click();
+		};
 		await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
 		await page.click('.mobile-nav-item:last-child');
-		await clickLabel('图表选项'); await page.click('.sheet-action:first-child');
+		await clickSheetAction('绘图对象与备份');
 		await page.click('.drawing-object:nth-child(7) button:first-child');
 		await screenshot('mobile-property-settings');
-		assert.ok(await page.$eval(prop, el => { const r = el.getBoundingClientRect(); return r.x >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight; }));
+		await page.waitForFunction(() => { const r = document.querySelector('.drawing-properties-dialog')?.getBoundingClientRect(); return Boolean(r && r.x >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight); }, { timeout: 2000 });
 		await page.setViewport({ width: 844, height: 390, isMobile: true, hasTouch: true });
 		await screenshot('mobile-landscape-settings');
-		assert.ok(await page.$eval(prop, el => el.getBoundingClientRect().bottom <= window.innerHeight));
+		await page.waitForFunction(() => { const r = document.querySelector('.drawing-properties-dialog')?.getBoundingClientRect(); return Boolean(r && r.bottom <= window.innerHeight); }, { timeout: 2000 });
 		await clickLabel('关闭绘图设置');
 
-		await clickLabel('图表选项'); await page.click('.sheet-action:first-child'); await page.click('.drawing-object:nth-child(4) button:first-child');
+		await clickSheetAction('绘图对象与备份'); await page.click('.drawing-object:nth-child(4) button:first-child');
 		await page.click('#drawing-tab-text'); await screenshot('mobile-landscape-text-settings'); await clickLabel('关闭绘图设置');
 		await clickLabel('编辑文字'); await screenshot('mobile-landscape-inline-text');
 		assert.ok(await page.$eval('.drawing-inline-text', el => { const r = el.getBoundingClientRect(); return r.x >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight; }));
@@ -337,17 +356,18 @@ test('grouped toolbar, drawing controls, persistence and responsive menus', { ti
 		await page.waitForSelector('.drawing-toolbar button:not(:disabled)');
 		assert.equal(await page.$('.drawing-inline-text'), null);
 		assert.equal((await readStore()).documents[3].style.attachedText, '需求区 · 观察');
-		await clickLabel('图表选项'); await page.click('.sheet-action:first-child'); await page.click('.drawing-object:nth-child(7) button:first-child'); await clickLabel('关闭绘图设置');
+		await clickSheetAction('绘图对象与备份'); await page.click('.drawing-object:nth-child(7) button:first-child'); await clickLabel('关闭绘图设置');
 		await page.setViewport({ width: 844, height: 390, isMobile: true, hasTouch: true });
+		await page.evaluate(() => new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))));
 
-		await clickLabel('线条颜色'); await screenshot('mobile-property-palette');
-		assert.ok(await page.$eval(popover, el => { const r = el.getBoundingClientRect(); return r.x >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight; }));
+		await clickLabel('线条颜色'); await page.waitForSelector(popover); await screenshot('mobile-property-palette');
+		await page.waitForFunction(() => { const r = document.querySelector('.drawing-property-popover')?.getBoundingClientRect(); return Boolean(r && r.x >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight); }, { timeout: 2000 });
 		await page.keyboard.press('Escape');
 		const beforeUndo = (await readStore()).documents.filter(d => !d.deleted).length;
 		await clickLabel('删除选中画线'); await waitSaved(beforeUndo - 1);
-		await clickLabel('图表选项'); await page.click('.sheet-action:nth-child(2)'); await waitSaved(beforeUndo);
-		await clickLabel('图表选项'); await page.click('.sheet-action:nth-child(3)'); await waitSaved(beforeUndo - 1);
-		await clickLabel('图表选项'); await page.click('.sheet-action:nth-child(2)'); await waitSaved(beforeUndo);
+		await clickSheetAction('撤销画线'); await waitSaved(beforeUndo);
+		await clickSheetAction('重做画线'); await waitSaved(beforeUndo - 1);
+		await clickSheetAction('撤销画线'); await waitSaved(beforeUndo);
 		await page.setViewport({ width: 1440, height: 1000, isMobile: false, hasTouch: false });
 		await page.reload(); await page.waitForSelector('.drawing-toolbar button:not(:disabled)');
 		assert.equal(await page.$eval('.drawing-editbar', el => el.hidden), true);
@@ -375,12 +395,24 @@ test('grouped toolbar, drawing controls, persistence and responsive menus', { ti
 		for (const [x, y] of [[600, 500], [800, 360], [780, 480]]) await page.mouse.click(bounds.x + x, bounds.y + y);
 		await waitSaved(++count); await clickLabel('绘图设置'); await setInput('.drawing-level-row:nth-child(4) input[type=text]', '扩展目标'); await page.click(`${prop} button[type=submit]`);
 		await page.waitForFunction(key => JSON.parse(localStorage.getItem(key)).documents.at(-1).style.fibLevels[3].text === '扩展目标', {}, storageKey); await screenshot('desktop-extension-note');
+		await clickLabel('反转层级');
+		await page.waitForFunction(key => { const doc = JSON.parse(localStorage.getItem(key)).documents.at(-1); return doc.kind === 'fib-extension' && doc.anchors[0].price > doc.anchors[1].price; }, {}, storageKey);
+		await choose('形态', 'elliott-impulse');
+		await page.mouse.click(bounds.x + 260, bounds.y + 420);
+		await page.mouse.click(bounds.x + 310, bounds.y + 340);
+		await page.waitForSelector('.drawing-hint-actions button:not([hidden])');
+		await page.click('.drawing-hint-actions button:first-child');
+		for (const [x, y] of [[320, 330], [360, 380], [420, 260], [470, 310], [530, 210]]) await page.mouse.click(bounds.x + x, bounds.y + y);
+		await waitSaved(++count);
+		await clickLabel('浪级样式'); await page.click(`${popover} button:first-of-type`);
+		await page.waitForFunction(key => JSON.parse(localStorage.getItem(key)).documents.at(-1).style.waveDegree === 'primary', {}, storageKey);
 		await choose('趋势线工具', 'info-line'); await drawLine(450, 400); await waitSaved(++count);
 		assert.equal(await page.$('.drawing-editbar [aria-label="添加文字"]'), null);
 		assert.equal(await page.$('.drawing-editbar [aria-label="编辑文字"]'), null);
 		await page.reload(); await page.waitForSelector('.drawing-toolbar button:not(:disabled)');
 		assert.equal((await readStore()).documents.find(d => d.kind === 'parallel-channel').style.attachedText, '通道观察');
 		assert.equal((await readStore()).documents.find(d => d.kind === 'fib-extension').style.fibLevels[3].text, '扩展目标');
+		assert.equal((await readStore()).documents.find(d => d.kind === 'elliott-impulse').style.waveDegree, 'primary');
 
 		assert.deepEqual(errors, []);
 	} finally { await browser.close(); }

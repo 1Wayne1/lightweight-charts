@@ -4,7 +4,6 @@ import {
 	applyCanvasLineStyle,
 	BaseDrawing,
 	BodyHitResult,
-	DrawingAxisLabelView,
 	LINE_HIT_TOLERANCE,
 } from '../base-drawing';
 import { formatPrice } from '../coordinates';
@@ -38,9 +37,7 @@ export class HorizontalLineDrawing extends BaseDrawing {
 		const sp = this._screenPoints[0] ?? null;
 		const pt = this._points[0];
 
-		if (this._priceAxisViews.length === 0) {
-			this._priceAxisViews.push(new DrawingAxisLabelView());
-		}
+		this._ensureAxisViewCapacity(1, 0);
 		if (pt && sp) {
 			const priceText = series ? formatPrice(series, pt.price) : pt.price.toFixed(2);
 			// Horizontal lines keep their price axis badge visible whenever showLabels is on

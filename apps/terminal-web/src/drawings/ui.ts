@@ -60,7 +60,15 @@ export function createDrawingUI(
 	search.oninput = renderTools;
 
 	const properties = createDrawingProperties(app, overlay, () => session, () => openObjects());
-	const hint = element('div', 'drawing-hint'); hint.hidden = true;
+	const hint = element('div', 'drawing-hint'); hint.hidden = true; hint.setAttribute('role', 'status');
+	hint.onpointerdown = event => event.stopPropagation();
+	const hintLabel = element('span', 'drawing-hint-label');
+	const hintActions = element('div', 'drawing-hint-actions');
+	const hintUndo = button('撤销上一点', () => manager()?.undoDraftPoint());
+	const hintFinish = button('完成', () => manager()?.finishDrawing());
+	const hintCancel = button('取消', () => manager()?.setActiveTool(null));
+	hintActions.append(hintUndo, hintFinish, hintCancel);
+	hint.append(hintLabel, hintActions);
 	const saveStatus = element('div', 'drawing-save-status'); saveStatus.setAttribute('role', 'status'); saveStatus.hidden = true;
 	overlay.append(hint, saveStatus);
 
@@ -90,17 +98,15 @@ export function createDrawingUI(
 		onHistoryChange?.(ready && next.canUndo, ready && next.canRedo);
 		properties.update(next, ready);
 		hint.hidden = !tool;
-		hint.textContent = tool
-			? (tool.creation === 'freehand'
-				? '按住拖动画线，松手完成'
-				: tool.creation === 'path'
-					? '依次点选路径，点“完成路径”或按 Enter 完成'
-					: tool.pointCount === 1
-						? `${tool.shortLabel} · 点击或按住拖动定位后松手`
-						: tool.pointCount === 2
-							? `${tool.shortLabel} · 点击两点或按住拖动绘制`
-							: `${tool.shortLabel} · 依次点选 ${tool.pointCount} 个锚点${tool.type.includes('position') ? '：入场、止损、目标' : ''}`)
-			: '';
+		if (tool) {
+			hintLabel.textContent = next.draftStepHint || toolLabel(tool.type);
+			hintUndo.hidden = next.draftPointCount === 0;
+			hintFinish.hidden = !next.canFinishDraft;
+		} else {
+			hintLabel.textContent = '';
+			hintUndo.hidden = true;
+			hintFinish.hidden = true;
+		}
 		if (objects.dialog.open) renderObjects();
 	}
 	return {

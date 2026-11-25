@@ -36,6 +36,9 @@ export function parseDrawingStyle(value: Record<string, unknown>): Partial<Drawi
 			const choices: Record<string, string[]> = { textAlign: ['left', 'center', 'right'], textPosition: ['top', 'middle', 'bottom'], textOrientation: ['horizontal', 'vertical'] };
 			if (typeof option !== 'string' || !choices[key].includes(option)) throw new Error('文字对齐方式无效');
 		}
+		else if (key === 'waveDegree') {
+			if (typeof option !== 'string' || !['primary', 'intermediate', 'minor', 'minute', 'minuette', 'subminuette'].includes(option)) throw new Error('波浪级别无效');
+		}
 		else if (key === 'zOrder') { if (!['top', 'normal', 'bottom'].includes(String(option))) throw new Error('画线层次无效'); }
 		else if (key === 'fibLevels') {
 			if (!Array.isArray(option) || option.length > 100 || !option.every((level: unknown) => record(level) && finite(level.value) && Math.abs(level.value) <= 1000 && color(level.color) && typeof level.visible === 'boolean' && (level.text === undefined || (typeof level.text === 'string' && level.text.length <= 10000)))) throw new Error('斐波那契比例无效');

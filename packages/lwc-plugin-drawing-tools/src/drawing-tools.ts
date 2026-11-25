@@ -6,7 +6,7 @@ export {
 	drawAnchorHandles,
 	LINE_HIT_TOLERANCE,
 } from './base-drawing';
-export type { BodyHitResult } from './base-drawing';
+export type { AxisLabelSpec, BodyHitResult } from './base-drawing';
 
 export {
 	anchorToScreen,
@@ -16,9 +16,11 @@ export {
 	formatPrice,
 	formatTime,
 	screenToAnchor,
+	screenToAnchorWithSnap,
 	shiftAnchor,
 	timeToEpochSeconds,
 } from './coordinates';
+export type { SnappedAnchorResult } from './coordinates';
 
 export {
 	clipLineToViewport,
@@ -42,18 +44,35 @@ export type { DrawingManagerOptions, DrawingManagerState } from './manager';
 
 export {
 	createDrawingInstance,
+	FibChannelDrawing,
+	FibExtensionDrawing,
 	FibRetracementDrawing,
 	getToolDefinition,
+	getToolStepHint,
 	HorizontalLineDrawing,
+	isElliottTool,
 	ParallelChannelDrawing,
+	PatternDrawing,
+	PositionDrawing,
 	PriceDateRangeDrawing,
 	RayDrawing,
 	RectangleDrawing,
 	TextAnnotationDrawing,
 	TOOL_DEFINITIONS,
+	TrendFibTimeDrawing,
 	TrendLineDrawing,
 	VerticalLineDrawing,
 } from './tools/index';
+
+export {
+	buildPositionDefaultAnchors,
+	flipPosition,
+} from './tools/position';
+
+export {
+	formatWaveLabels,
+	vertexLabelDirection,
+} from './tools/patterns';
 
 export {
 	BASE_DRAWING_OPTIONS,
@@ -67,6 +86,7 @@ export type {
 	DrawingStyleOptions,
 	DrawingTheme,
 	DrawingToolType,
+	EditHandle,
 	FibLevelConfig,
 	HitPart,
 	MagnetMode,
@@ -74,6 +94,7 @@ export type {
 	SerializedDrawing,
 	ToolCapabilities,
 	ToolDefinition,
+	WaveDegree,
 } from './types';
 
 export { DrawingToolbar } from './ui/toolbar';

@@ -24,10 +24,20 @@ import {
 	BASE_DRAWING_OPTIONS,
 	DrawingStyleOptions,
 	DrawingToolType,
+	EditHandle,
 	encodeExternalId,
 	ScreenPoint,
 	SerializedDrawing,
 } from './types';
+
+export interface AxisLabelSpec {
+	coord: number | null;
+	text: string;
+	color: string;
+	textColor?: string;
+	/** Overrides default (selected || preview) visibility while still gated by isRenderVisible() && showLabels. */
+	visible?: boolean;
+}
 
 export const ANCHOR_HIT_RADIUS = 8;
 export const LINE_HIT_TOLERANCE = 6;
@@ -178,15 +188,26 @@ class DrawingPaneView implements IPrimitivePaneView {
 				this._source.draw(target, utils);
 				this._source.drawAttachedText(target);
 				if (this._source.shouldDrawAnchors()) {
-					let handlePoints: readonly (ScreenPoint | null)[] = this._source.screenPoints();
+					let handlePoints: readonly (ScreenPoint | null)[] = [];
+					let activeIndex: number | null = this._source.hoveredAnchorIndex();
 					target.useMediaCoordinateSpace(({ mediaSize }) => {
-						handlePoints = this._source.anchorHandlePoints(mediaSize.width, mediaSize.height);
+						const handles = this._source.editHandles(mediaSize.width, mediaSize.height);
+						if (handles.length > 0) {
+							handlePoints = handles.map(h => h.point);
+							const activeId = this._source.activeHandleId() ?? this._source.hoveredHandleId();
+							if (activeId !== null) {
+								const idx = handles.findIndex(h => h.id === activeId);
+								activeIndex = idx >= 0 ? idx : null;
+							}
+						} else {
+							handlePoints = this._source.anchorHandlePoints(mediaSize.width, mediaSize.height);
+						}
 					});
 					drawAnchorHandles(
 						target,
 						handlePoints,
 						this._source.options().color,
-						this._source.hoveredAnchorIndex(),
+						activeIndex,
 						this._source.options().locked
 					);
 				}
@@ -221,6 +242,8 @@ export abstract class BaseDrawing extends PluginBase {
 	private _selected: boolean = false;
 	private _hovered: boolean = false;
 	private _hoveredAnchorIndex: number | null = null;
+	private _hoveredHandleId: string | null = null;
+	private _activeHandleId: string | null = null;
 	private _isPreview: boolean = false;
 	private _globalVisible: boolean = true;
 
@@ -298,12 +321,42 @@ export abstract class BaseDrawing extends PluginBase {
 		return this._hoveredAnchorIndex;
 	}
 
-	public setHoverState(hovered: boolean, anchorIndex: number | null = null): void {
-		if (this._hovered === hovered && this._hoveredAnchorIndex === anchorIndex) {
+	public hoveredHandleId(): string | null {
+		return this._hoveredHandleId;
+	}
+
+	public activeHandleId(): string | null {
+		return this._activeHandleId;
+	}
+
+	public setActiveHandle(handleId: string | null): void {
+		if (this._activeHandleId === handleId) return;
+		this._activeHandleId = handleId;
+		if (this._selected || this._isPreview) {
+			this.updateAxisViews();
+		}
+		this.requestUpdate();
+	}
+
+	public setHoverState(
+		hovered: boolean,
+		anchorIndex: number | null = null,
+		handleId: string | null = null
+	): void {
+		const nextHandleId = hovered
+			? (handleId ?? (anchorIndex !== null ? String(anchorIndex) : null))
+			: null;
+		if (
+			this._hovered === hovered &&
+			this._hoveredAnchorIndex === anchorIndex &&
+			this._hoveredHandleId === nextHandleId
+		) {
 			return;
 		}
 		this._hovered = hovered;
 		this._hoveredAnchorIndex = anchorIndex;
+		this._hoveredHandleId = nextHandleId;
+		this.updateAxisViews();
 		this.requestUpdate();
 	}
 
@@ -335,6 +388,56 @@ export abstract class BaseDrawing extends PluginBase {
 	/** Screen coordinates where hover/selection anchor handles should be rendered. */
 	public anchorHandlePoints(_width: number, _height: number): readonly (ScreenPoint | null)[] {
 		return this._screenPoints;
+	}
+
+	/** Semantic edit handles (corners, edge midpoints, constrained anchors). */
+	public editHandles(width: number, height: number): readonly EditHandle[] {
+		const pts = this.anchorHandlePoints(width, height);
+		if (pts.length !== this._screenPoints.length) {
+			return [];
+		}
+		const handles: EditHandle[] = [];
+		for (let i = 0; i < pts.length; i++) {
+			const point = pts[i];
+			if (!point) continue;
+			handles.push({
+				id: String(i),
+				point,
+				anchorIndex: i,
+				cursor: 'pointer',
+				axisAnchors: [i],
+			});
+		}
+		return handles;
+	}
+
+	/** Maps a semantic handle drag into updated canonical anchors. */
+	public applyHandleDrag(
+		handleId: string,
+		targetAnchor: AnchorPoint,
+		origPoints: readonly AnchorPoint[],
+		_shiftKey: boolean
+	): AnchorPoint[] | null {
+		const idx = Number(handleId);
+		if (!Number.isInteger(idx) || idx < 0 || idx >= origPoints.length) {
+			return null;
+		}
+		const next = origPoints.map(p => ({ ...p }));
+		next[idx] = { ...targetAnchor };
+		return next;
+	}
+
+	/** Optional live step prompt shown in the HUD while creating a multi-step drawing. */
+	public previewStepLabel(_draftCount: number): string | null {
+		return null;
+	}
+
+	/** Optional custom axis labels (e.g., color-coded Target/Entry/Stop tags). */
+	public customAxisLabels(
+		_chart: IChartApi,
+		_series: ISeriesApi<SeriesType>
+	): { price: AxisLabelSpec[]; time: AxisLabelSpec[] } | null {
+		return null;
 	}
 
 	public serialize(): SerializedDrawing {
@@ -382,42 +485,105 @@ export abstract class BaseDrawing extends PluginBase {
 		// Default no-op
 	}
 
-	/** Default axis views show anchor prices & times when selected or previewing. */
+	/**
+	 * Replaces `_priceAxisViews` / `_timeAxisViews` with a fresh array instance when growing so
+	 * Lightweight Charts' `SeriesPrimitiveWrapper` reference-equality cache refreshes its axis wrappers.
+	 */
+	protected _ensureAxisViewCapacity(priceCount: number, timeCount: number): void {
+		if (this._priceAxisViews.length < priceCount) {
+			const grown = [...this._priceAxisViews];
+			while (grown.length < priceCount) {
+				grown.push(new DrawingAxisLabelView());
+			}
+			this._priceAxisViews = grown;
+		}
+		if (this._timeAxisViews.length < timeCount) {
+			const grown = [...this._timeAxisViews];
+			while (grown.length < timeCount) {
+				grown.push(new DrawingAxisLabelView());
+			}
+			this._timeAxisViews = grown;
+		}
+	}
+
+	/** Default axis views show anchor prices & times when selected or previewing, de-cluttered for multi-point tools. */
 	protected updateAxisViews(): void {
 		const chart = this.chartOrNull();
 		const series = this.seriesOrNull();
-		const show =
-			this.isRenderVisible() &&
-			this._options.showLabels &&
-			(this._selected || this._isPreview);
+		const canShow = this.isRenderVisible() && this._options.showLabels;
+		const defaultShow = canShow && (this._selected || this._isPreview);
 
-		while (this._priceAxisViews.length < this._points.length) {
-			this._priceAxisViews.push(new DrawingAxisLabelView());
-		}
-		while (this._timeAxisViews.length < this._points.length) {
-			this._timeAxisViews.push(new DrawingAxisLabelView());
+		const custom = chart && series ? this.customAxisLabels(chart, series) : null;
+		if (custom) {
+			this._ensureAxisViewCapacity(custom.price.length, custom.time.length);
+			for (let i = 0; i < custom.price.length; i++) {
+				const spec = custom.price[i];
+				const specShow = spec.visible !== undefined ? (canShow && spec.visible) : defaultShow;
+				this._priceAxisViews[i].update(spec.coord, spec.text, specShow, spec.color, spec.textColor);
+			}
+			for (let i = custom.price.length; i < this._priceAxisViews.length; i++) {
+				this._priceAxisViews[i].update(null, '', false, this._options.color);
+			}
+			for (let i = 0; i < custom.time.length; i++) {
+				const spec = custom.time[i];
+				const specShow = spec.visible !== undefined ? (canShow && spec.visible) : defaultShow;
+				this._timeAxisViews[i].update(spec.coord, spec.text, specShow, spec.color, spec.textColor);
+			}
+			for (let i = custom.time.length; i < this._timeAxisViews.length; i++) {
+				this._timeAxisViews[i].update(null, '', false, this._options.color);
+			}
+			return;
 		}
 
-		for (let i = 0; i < this._points.length; i++) {
+		let indices: number[] = [];
+		if (this._isPreview) {
+			if (this._points.length > 0) indices = [this._points.length - 1];
+		} else if (this._points.length >= 3) {
+			const activeId = this._activeHandleId ?? this._hoveredHandleId;
+			if (activeId !== null && chart && series) {
+				const handles = this.editHandles(chart.timeScale().width(), series.getPane().getHeight());
+				const matched = handles.find(h => h.id === activeId);
+				if (matched?.axisAnchors?.length) {
+					indices = matched.axisAnchors.filter(idx => idx >= 0 && idx < this._points.length);
+				} else if (matched?.anchorIndex !== undefined && matched.anchorIndex < this._points.length) {
+					indices = [matched.anchorIndex];
+				}
+			}
+			if (indices.length === 0 && this._hoveredAnchorIndex !== null && this._hoveredAnchorIndex < this._points.length) {
+				indices = [this._hoveredAnchorIndex];
+			}
+			if (indices.length === 0) {
+				indices = [0, this._points.length - 1];
+			}
+		} else {
+			indices = this._points.map((_, i) => i);
+		}
+
+		this._ensureAxisViewCapacity(indices.length, indices.length);
+
+		for (let viewIdx = 0; viewIdx < indices.length; viewIdx++) {
+			const i = indices[viewIdx];
 			const sp = this._screenPoints[i] ?? null;
 			const pt = this._points[i];
 			const priceText = series ? formatPrice(series, pt.price) : pt.price.toFixed(2);
 			const timeText = chart ? formatTime(chart, pt) : '';
-			this._priceAxisViews[i].update(
+			this._priceAxisViews[viewIdx].update(
 				sp ? sp.y : null,
 				priceText,
-				show,
+				defaultShow,
 				this._options.color
 			);
-			this._timeAxisViews[i].update(
+			this._timeAxisViews[viewIdx].update(
 				sp ? sp.x : null,
 				timeText,
-				show,
+				defaultShow,
 				this._options.color
 			);
 		}
-		for (let i = this._points.length; i < this._priceAxisViews.length; i++) {
+		for (let i = indices.length; i < this._priceAxisViews.length; i++) {
 			this._priceAxisViews[i].update(null, '', false, this._options.color);
+		}
+		for (let i = indices.length; i < this._timeAxisViews.length; i++) {
 			this._timeAxisViews[i].update(null, '', false, this._options.color);
 		}
 	}
@@ -448,38 +614,44 @@ export abstract class BaseDrawing extends PluginBase {
 		}
 		const point: ScreenPoint = { x, y };
 
-		// 1. Anchors take highest priority when drawing is selected or hovered
+		// 1. Anchors & semantic handles take highest priority when drawing is selected or hovered
 		if (this._selected || this._hovered) {
 			const chart = this.chartOrNull();
 			const series = this.seriesOrNull();
-			const candidatePoints = chart && series
-				? this.anchorHandlePoints(chart.timeScale().width(), series.getPane().getHeight())
-				: this._screenPoints;
-			const anchorPoints = candidatePoints.length === this._screenPoints.length
-				? candidatePoints
-				: this._screenPoints;
-			let bestAnchorIdx = -1;
-			let bestAnchorDist = Infinity;
-			for (let i = 0; i < anchorPoints.length; i++) {
-				const sp = anchorPoints[i];
-				if (!sp) continue;
-				const dist = distancePointToPoint(point, sp);
-				if (dist <= ANCHOR_HIT_RADIUS + hitSlop && dist < bestAnchorDist) {
-					bestAnchorDist = dist;
-					bestAnchorIdx = i;
+			const handles = chart && series
+				? this.editHandles(chart.timeScale().width(), series.getPane().getHeight())
+				: [];
+			let bestHandle: EditHandle | null = null;
+			let bestHandleDist = Infinity;
+			for (const handle of handles) {
+				const dist = distancePointToPoint(point, handle.point);
+				if (dist <= ANCHOR_HIT_RADIUS + hitSlop && dist < bestHandleDist) {
+					bestHandleDist = dist;
+					bestHandle = handle;
 				}
 			}
-			if (bestAnchorIdx !== -1) {
+			if (bestHandle) {
+				const isDirectAnchor =
+					bestHandle.anchorIndex !== undefined &&
+					bestHandle.id === String(bestHandle.anchorIndex);
 				return {
-					externalId: encodeExternalId({
-						drawingId: this.id,
-						part: 'anchor',
-						anchorIndex: bestAnchorIdx,
-					}),
+					externalId: encodeExternalId(
+						isDirectAnchor
+							? {
+								drawingId: this.id,
+								part: 'anchor',
+								anchorIndex: bestHandle.anchorIndex,
+							}
+							: {
+								drawingId: this.id,
+								part: 'handle',
+								handleId: bestHandle.id,
+							}
+					),
 					zOrder: this._options.zOrder,
-					distance: bestAnchorDist,
+					distance: bestHandleDist,
 					hitTestPriority: 2,
-					cursorStyle: 'pointer',
+					cursorStyle: bestHandle.cursor ?? 'pointer',
 				};
 			}
 		}

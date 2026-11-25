@@ -1,5 +1,7 @@
 import type { ToolDefinition, DrawingStyleOptions } from '../types';
 
+export const POSITION_ENTRY_COLOR = '#787B86';
+
 /** Tool identifiers are stable persistence keys; labels may be localized independently. */
 export const EXTENDED_TOOLS = [
 	['extended-line', '延长线', '线条', 2], ['horizontal-ray', '水平射线', '线条', 1],
@@ -48,10 +50,37 @@ export const EXTENDED_DEFINITIONS: ToolDefinition[] = EXTENDED_TOOLS.map(([type,
 	if (type === 'highlighter') Object.assign(options, { lineWidth: 16, fillOpacity: 0.3, color: '#ffca28' });
 	if (type === 'extended-line') Object.assign(options, { extendLeft: true, extendRight: true });
 	if (group === '分叉线' || type === 'fib-fan' || type === 'gann-fan') options.extendRight = true;
-	if (type === 'fib-extension') options.fibLevels = [0, 0.618, 1, 1.618, 2.618, 3.618, 4.236].map(value => ({ value, color: '#7c83ff', visible: true }));
+	if (type === 'fib-extension') {
+		options.fibLevels = [
+			[0, '#787B86'],
+			[0.236, '#F44336'],
+			[0.382, '#81C784'],
+			[0.5, '#4CAF50'],
+			[0.618, '#009688'],
+			[0.786, '#64B5F6'],
+			[1, '#2962FF'],
+			[1.618, '#FF9800'],
+			[2.618, '#E91E63'],
+			[3.618, '#9C27B0'],
+			[4.236, '#787B86'],
+		].map(([value, color]) => ({ value: Number(value), color: String(color), visible: true }));
+	}
+	if (type === 'trend-fib-time') {
+		options.fibLevels = [
+			[0, '#787B86'],
+			[0.382, '#81C784'],
+			[0.5, '#4CAF50'],
+			[0.618, '#009688'],
+			[1, '#2962FF'],
+			[1.618, '#FF9800'],
+			[2.618, '#E91E63'],
+		].map(([value, color]) => ({ value: Number(value), color: String(color), visible: true }));
+	}
+	const isPosition = type === 'long-position' || type === 'short-position';
+	if (isPosition) Object.assign(options, { color: POSITION_ENTRY_COLOR, lineWidth: 1 });
 	return {
 		type, label, shortLabel: label, group, pointCount,
-		creation: type === 'brush' || type === 'highlighter' ? 'freehand' : pointCount === 0 ? 'path' : 'points',
+		creation: isPosition ? 'instant-box' : type === 'brush' || type === 'highlighter' ? 'freehand' : pointCount === 0 ? 'path' : 'points',
 		capabilities: { hasStroke: true, hasFill: true, hasLineWidth: true, hasLineStyle: true, hasExtend: ['线条', '通道', '分叉线', '斐波那契'].includes(group), hasText: text, hasMidline: false },
 		defaultOptions: options,
 	};

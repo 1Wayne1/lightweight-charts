@@ -37,7 +37,12 @@
 .drawing-button:disabled { opacity: .4; cursor: default; }
 .drawing-tool-grid .drawing-button { display: flex; align-items: center; gap: 10px; white-space: normal; text-align: left; }
 .drawing-tool-grid .drawing-icon { width: 24px; height: 24px; }
-.drawing-hint { position: absolute; z-index: 4; bottom: 38px; left: 10px; max-width: calc(100% - 100px); border-radius: 5px; padding: 8px 12px; background: #273862ed; color: #dce6ff; font-size: 12px; pointer-events: none; }
+.drawing-hint { position: absolute; z-index: 4; bottom: 38px; left: 10px; max-width: calc(100% - 100px); display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; border-radius: 6px; padding: 6px 10px; background: #1e2a48f0; border: 1px solid #3c548e; color: #dce6ff; font-size: 12px; pointer-events: auto; box-shadow: 0 4px 14px #0005; }
+.drawing-hint-label { line-height: 1.4; }
+.drawing-hint-actions { display: inline-flex; align-items: center; gap: 5px; }
+.drawing-hint-actions .drawing-button { min-height: 24px; padding: 2px 8px; font-size: 11px; background: #ffffff1f; color: #eef3ff; border-color: #ffffff1a; }
+.drawing-hint-actions .drawing-button:hover { background: #2962ff; color: #fff; }
+.drawing-hint-actions .drawing-button[hidden] { display: none; }
 .drawing-save-status { position: absolute; z-index: 4; top: calc(var(--main-pane-top, 0px) + 38px); right: calc(var(--price-scale-width, 84px) + 12px); max-width: calc(100% - 110px); color: #868fa6; font-size: 10px; pointer-events: none; text-align: right; }
 .drawing-save-status.error { color: #ffba7a; background: #3e2825; padding: 5px 8px; border-radius: 5px; font-size: 12px; pointer-events: auto; }
 .drawing-object { display: grid; grid-template-columns: minmax(100px, 1fr) repeat(3, auto); gap: 6px; margin-bottom: 8px; }
@@ -50,7 +55,8 @@
  .drawing-dialog .drawing-button[aria-pressed=true] { background: #2962ff; color: #fff; }
  .drawing-dialog .drawing-search { color: #202637; background: #f2f4f8; border-color: #d8dce5; }
  .drawing-tool-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
- .drawing-hint { left: 5px; bottom: 42px; max-width: calc(100% - 76px); font-size: 11px; }
+ .drawing-hint { left: 5px; bottom: 42px; max-width: calc(100% - 76px); font-size: 11px; padding: 5px 8px; gap: 6px; }
+ .drawing-hint-actions .drawing-button { min-height: 30px; padding: 3px 9px; font-size: 11px; }
  .drawing-save-status { top: calc(var(--main-pane-top, 0px) + 34px); right: calc(var(--price-scale-width, 72px) + 10px); font-size: 9px; }
 }
 @media (max-width: 1100px) and (max-height: 600px) {

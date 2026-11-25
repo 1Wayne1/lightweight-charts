@@ -102,17 +102,24 @@ function resolveTimeForLogical(chart: IChartApi, logical: Logical): Time | undef
 	return time;
 }
 
+export interface SnappedAnchorResult {
+	anchor: AnchorPoint;
+	snapped: boolean;
+	snapScreen?: ScreenPoint;
+}
+
 /**
  * Converts pane-local CSS coordinates (x, y) into an AnchorPoint,
- * optionally applying Weak or Strong OHLC Magnet snapping.
+ * optionally applying Weak or Strong OHLC Magnet snapping and returning
+ * visual snap coordinates when snapped.
  */
-export function screenToAnchor(
+export function screenToAnchorWithSnap(
 	chart: IChartApi,
 	series: ISeriesApi<SeriesType>,
 	x: number,
 	y: number,
 	magnetMode: MagnetMode = 'off'
-): AnchorPoint | null {
+): SnappedAnchorResult | null {
 	const timeScale = chart.timeScale();
 	const rawLogical = timeScale.coordinateToLogical(x);
 	const rawPrice = series.coordinateToPrice(y);
@@ -122,6 +129,8 @@ export function screenToAnchor(
 
 	let logical = rawLogical;
 	let price = rawPrice as number;
+	let snapped = false;
+	let snapScreen: ScreenPoint | undefined;
 
 	if (magnetMode !== 'off') {
 		const nearestIndex = Math.round(rawLogical);
@@ -136,6 +145,7 @@ export function screenToAnchor(
 
 			let bestPrice: number | null = null;
 			let bestDist = Infinity;
+			let bestY: number | null = null;
 			for (const candidate of candidates) {
 				const cy = series.priceToCoordinate(candidate);
 				if (cy === null) continue;
@@ -143,21 +153,43 @@ export function screenToAnchor(
 				if (dist < bestDist) {
 					bestDist = dist;
 					bestPrice = candidate;
+					bestY = cy;
 				}
 			}
 
 			if (
 				bestPrice !== null &&
+				bestY !== null &&
 				(magnetMode === 'strong' || bestDist <= WEAK_MAGNET_THRESHOLD_PX)
 			) {
 				price = bestPrice;
 				logical = nearestIndex as Logical;
+				snapped = true;
+				const snapX = timeScale.logicalToCoordinate(logical);
+				if (snapX !== null) {
+					snapScreen = { x: snapX, y: bestY };
+				}
 			}
 		}
 	}
 
 	const time = resolveTimeForLogical(chart, logical);
-	return time !== undefined ? { logical, time, price } : { logical, price };
+	const anchor = time !== undefined ? { logical, time, price } : { logical, price };
+	return { anchor, snapped, snapScreen };
+}
+
+/**
+ * Converts pane-local CSS coordinates (x, y) into an AnchorPoint,
+ * optionally applying Weak or Strong OHLC Magnet snapping.
+ */
+export function screenToAnchor(
+	chart: IChartApi,
+	series: ISeriesApi<SeriesType>,
+	x: number,
+	y: number,
+	magnetMode: MagnetMode = 'off'
+): AnchorPoint | null {
+	return screenToAnchorWithSnap(chart, series, x, y, magnetMode)?.anchor ?? null;
 }
 
 /**

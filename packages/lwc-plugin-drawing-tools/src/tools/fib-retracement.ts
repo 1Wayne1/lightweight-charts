@@ -12,10 +12,63 @@ import {
 	distancePointToSegment,
 	pointInRect,
 } from '../geometry';
-import { DrawingToolType, ScreenPoint } from '../types';
+import { AnchorPoint, DrawingToolType, EditHandle, ScreenPoint } from '../types';
 
 export class FibRetracementDrawing extends BaseDrawing {
 	public readonly type: DrawingToolType = 'fib-retracement';
+
+	public override previewStepLabel(draftCount: number): string {
+		if (draftCount === 0) return '斐波那契回撤 (1/2) · 点击放置回撤起点';
+		return '斐波那契回撤 (2/2) · 移动至回撤终点点击';
+	}
+
+	public override editHandles(): readonly EditHandle[] {
+		const p1 = this._screenPoints[0];
+		const p2 = this._screenPoints[1];
+		if (!p1 || !p2) {
+			return super.editHandles(0, 0);
+		}
+		const sameDir = (p1.x <= p2.x) === (p1.y <= p2.y);
+		const primaryCursor = sameDir ? 'nwse-resize' : 'nesw-resize';
+		const secondaryCursor = sameDir ? 'nesw-resize' : 'nwse-resize';
+		return [
+			{ id: '0', point: p1, anchorIndex: 0, cursor: primaryCursor, axisAnchors: [0] },
+			{ id: '1', point: p2, anchorIndex: 1, cursor: primaryCursor, axisAnchors: [1] },
+			{ id: 'c1', point: { x: p1.x, y: p2.y }, cursor: secondaryCursor, axisAnchors: [0, 1] },
+			{ id: 'c2', point: { x: p2.x, y: p1.y }, cursor: secondaryCursor, axisAnchors: [0, 1] },
+		];
+	}
+
+	public override applyHandleDrag(
+		handleId: string,
+		targetAnchor: AnchorPoint,
+		origPoints: readonly AnchorPoint[]
+	): AnchorPoint[] | null {
+		if (origPoints.length < 2) return null;
+		const a0 = origPoints[0];
+		const a1 = origPoints[1];
+		if (handleId === 'c1') {
+			return [
+				{
+					logical: targetAnchor.logical,
+					price: a0.price,
+					...(targetAnchor.time !== undefined ? { time: targetAnchor.time } : {}),
+				},
+				{ ...a1, price: targetAnchor.price },
+			];
+		}
+		if (handleId === 'c2') {
+			return [
+				{ ...a0, price: targetAnchor.price },
+				{
+					logical: targetAnchor.logical,
+					price: a1.price,
+					...(targetAnchor.time !== undefined ? { time: targetAnchor.time } : {}),
+				},
+			];
+		}
+		return super.applyHandleDrag(handleId, targetAnchor, origPoints, false);
+	}
 
 	public draw(target: CanvasRenderingTarget2D, utils?: DrawingUtils): void {
 		const p1 = this._screenPoints[0];
@@ -26,6 +79,7 @@ export class FibRetracementDrawing extends BaseDrawing {
 		if (!p1 || !p2 || !a1 || !a2 || !series) return;
 
 		const opts = this._options;
+		const active = this.isHovered() || this.isSelected() || this.isPreview();
 		const levels = opts.fibLevels
 			.filter(l => l.visible)
 			.slice()
@@ -72,7 +126,7 @@ export class FibRetracementDrawing extends BaseDrawing {
 			}
 
 			// 2. Dashed diagonal trend reference between anchor p1 and p2
-			ctx.strokeStyle = colorWithAlpha(opts.color, 0.7);
+			ctx.strokeStyle = colorWithAlpha(opts.color, active ? 0.8 : 0.38);
 			ctx.lineWidth = 1;
 			applyCanvasLineStyle(ctx, LineStyle.Dashed, 1, utils);
 			ctx.beginPath();
@@ -81,9 +135,6 @@ export class FibRetracementDrawing extends BaseDrawing {
 			ctx.stroke();
 
 			// 3. Horizontal Fibonacci level lines & labels
-			ctx.font = `${opts.fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
-			ctx.textBaseline = opts.textPosition === 'bottom' ? 'bottom' : 'top';
-
 			for (const lvl of computedLevels) {
 				const y = Math.round(lvl.y) + 0.5;
 				ctx.strokeStyle = lvl.color;
@@ -93,11 +144,22 @@ export class FibRetracementDrawing extends BaseDrawing {
 				ctx.moveTo(leftX, y);
 				ctx.lineTo(rightX, y);
 				ctx.stroke();
+			}
 
-				if (opts.showLabels) {
-					const label = `${lvl.value} (${formatPrice(series, lvl.price)})`;
+			if (opts.showLabels) {
+				ctx.font = `${opts.fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
+				ctx.textBaseline = opts.textPosition === 'bottom' ? 'bottom' : 'top';
+				const minLabelGap = active ? opts.fontSize + 1 : opts.fontSize + 3;
+				let lastLabelY = -Infinity;
+				const sortedByY = computedLevels.slice().sort((a, b) => a.y - b.y);
+				for (const lvl of sortedByY) {
+					if (lvl.y - lastLabelY < minLabelGap) continue;
+					lastLabelY = lvl.y;
+					const y = Math.round(lvl.y) + 0.5;
+					const fullLabel = `${lvl.value} (${formatPrice(series, lvl.price)})`;
+					const outside = leftX > ctx.measureText(fullLabel).width + 12;
+					const label = outside || active ? fullLabel : String(lvl.value);
 					ctx.fillStyle = lvl.color;
-					const outside = leftX > ctx.measureText(label).width + 12;
 					ctx.textAlign = outside ? 'right' : 'left';
 					ctx.fillText(label, outside ? leftX - 6 : leftX + 6, y + (opts.textPosition === 'bottom' ? -3 : 3));
 				}

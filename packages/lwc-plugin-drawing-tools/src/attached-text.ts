@@ -58,7 +58,7 @@ export function attachedTextPlacements(type: DrawingToolType, context: TextConte
 	if (kind === 'levels') {
 		if (!b || !anchors[1] || (type === 'fib-extension' && (!c || !anchors[2]))) return [];
 		const left = Math.max(0, o.extendLeft ? 0 : Math.min(a.x, type === 'fib-extension' ? c!.x : b.x));
-		const right = Math.min(width, o.extendRight ? width : type === 'fib-extension' ? Math.max(b.x, c!.x) + 60 : Math.max(a.x, b.x));
+		const right = Math.min(width, o.extendRight ? width : type === 'fib-extension' ? Math.max(b.x, c!.x) + 80 : Math.max(a.x, b.x));
 		if (right < left) return [];
 		o.fibLevels.forEach((level, levelIndex) => {
 			if (!level.visible) return;

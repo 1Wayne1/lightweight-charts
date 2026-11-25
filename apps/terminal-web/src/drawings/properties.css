@@ -7,6 +7,7 @@
 .drawing-property-button .icon, .drawing-object-marker .icon { width: 20px; height: 20px; }
 .drawing-property-button .drawing-icon, .drawing-object-marker .drawing-icon { width: 24px; height: 24px; }
 .drawing-width-button { width: 42px; }
+.drawing-text-chip { width: auto; min-width: 34px; padding: 0 8px; font-size: 12px; font-weight: 500; white-space: nowrap; }
 .drawing-property-button:hover, .drawing-bar-grip:hover { background: #2a2e39; color: #f0f3fa; }
 .drawing-property-button[aria-pressed=true], .drawing-property-button[aria-expanded=true] { background: #2962ff26; color: #7da6ff; }
 .drawing-property-button:disabled { opacity: .35; cursor: default; }

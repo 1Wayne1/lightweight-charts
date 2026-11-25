@@ -111,7 +111,15 @@ test('manager commits on release, cancels touch gestures, supports freehand, and
 			Object.assign(event, { clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, shiftKey: false, pointerType: 'mouse', ...extra });
 			target.dispatchEvent(event);
 		};
-		manager.setActiveTool('horizontal-line'); assert.equal(opts.handleScroll, false); assert.equal(surface.style.touchAction, 'none');
+		manager.setActiveTool('horizontal-line');
+		assert.deepEqual(opts.handleScroll, {
+			pressedMouseMove: false,
+			mouseWheel: true,
+			horzTouchDrag: false,
+			vertTouchDrag: false,
+		});
+		assert.deepEqual(opts.handleScale, { pinch: true });
+		assert.equal(surface.style.touchAction, 'none');
 		pointer(container, 'pointerdown', 100, 100); assert.equal(manager.drawings().length, 0);
 		pointer(win, 'pointercancel', 100, 100); assert.equal(manager.drawings().length, 0);
 		// Horizontal line supports touch slide-to-aim before release.
@@ -184,6 +192,125 @@ test('manager commits on release, cancels touch gestures, supports freehand, and
 		manager.undo(); assert.deepEqual(manager.exportState(), before);
 		manager.redo(); assert.deepEqual(manager.exportState(), after);
 		manager.setActiveTool('trend-line'); manager.destroy(); assert.deepEqual(opts.handleScroll, { pressedMouseMove: true }); assert.equal(surface.style.touchAction, '');
+	} finally { globalThis.window = savedWindow; globalThis.HTMLElement = savedElement; }
+});
+
+test('manager P0/P1 interactions: multi-point step undo, 1-click position, clone, replace and style defaults', async () => {
+	const { DrawingManager, flipPosition } = await import('@tradingview/lwc-plugin-drawing-tools');
+	class Node extends EventTarget {
+		style = {}; children = []; tagName = 'DIV'; captured = new Set();
+		querySelector() { return {}; }
+		closest() { return null; }
+		getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; }
+		setPointerCapture(id) { this.captured.add(id); }
+		hasPointerCapture(id) { return this.captured.has(id); }
+		releasePointerCapture(id) { this.captured.delete(id); }
+	}
+	const savedWindow = globalThis.window; const savedElement = globalThis.HTMLElement;
+	const win = new EventTarget();
+	globalThis.window = win; globalThis.HTMLElement = Node;
+	try {
+		const container = new Node(); const pane = new Node(); const cell = new Node(); const surface = new Node();
+		pane.children = [cell]; cell.style.position = 'relative'; cell.firstElementChild = surface;
+		let opts = { crosshair: { mode: 0 }, handleScroll: { pressedMouseMove: true }, handleScale: { pinch: true } };
+		const timescale = {
+			coordinateToLogical: x => x / 20,
+			logicalToCoordinate: x => x * 20,
+			coordinateToTime: x => 1000 + Math.round(x / 20) * 60,
+			timeToCoordinate: t => (t - 1000) / 60 * 20,
+			getVisibleLogicalRange: () => ({ from: 0, to: 100 }),
+			width: () => 800,
+		};
+		const chart = { options: () => opts, applyOptions: next => opts = { ...opts, ...next }, chartElement: () => container, timeScale: () => timescale };
+		const paneApi = { getHTMLElement: () => pane, getHeight: () => 600 };
+		const series = {
+			priceToCoordinate: v => 500 - v,
+			coordinateToPrice: v => 500 - v,
+			getPane: () => paneApi,
+			priceFormatter: () => ({ format: String }),
+			subscribeDataChanged() {},
+			unsubscribeDataChanged() {},
+			attachPrimitive(p) { p.attached({ chart, series, requestUpdate() {} }); },
+			detachPrimitive(p) { p.detached(); },
+		};
+		const manager = new DrawingManager(chart, series, { normalizeAnchor: p => scale.canonical(p) });
+		const pointer = (target, type, x, y, extra = {}) => {
+			const event = new Event(type);
+			Object.assign(event, { clientX: x, clientY: y, pointerId: 1, isPrimary: true, button: 0, shiftKey: false, ctrlKey: false, metaKey: false, pointerType: 'mouse', ...extra });
+			target.dispatchEvent(event);
+		};
+		const pressKey = (k, extra = {}) => {
+			const event = new Event('keydown');
+			Object.assign(event, { key: k, code: '', shiftKey: false, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {}, ...extra });
+			win.dispatchEvent(event);
+		};
+
+		// 1. Multi-point Elliott wave supports single-step undo via Backspace and right-click without losing earlier points
+		manager.setActiveTool('elliott-impulse');
+		for (const [x, y] of [[60, 400], [120, 320], [160, 360]]) {
+			pointer(container, 'pointerdown', x, y);
+			pointer(win, 'pointerup', x, y);
+		}
+		assert.equal(manager.getState().draftPointCount, 3);
+		pressKey('Backspace');
+		assert.equal(manager.getState().draftPointCount, 2);
+		const ctxEv = new Event('contextmenu');
+		Object.assign(ctxEv, { preventDefault() {}, stopImmediatePropagation() {} });
+		container.dispatchEvent(ctxEv);
+		assert.equal(manager.getState().draftPointCount, 1);
+		assert.equal(manager.activeTool(), 'elliott-impulse');
+		for (const [x, y] of [[120, 320], [160, 360], [220, 220], [260, 290], [320, 160]]) {
+			pointer(container, 'pointerdown', x, y);
+			pointer(win, 'pointerup', x, y);
+		}
+		assert.equal(manager.drawings().length, 1);
+		assert.equal(manager.drawings()[0].type, 'elliott-impulse');
+		assert.equal(manager.drawings()[0].points().length, 6);
+
+		// 2. Long-position creates on 1 click with 3 canonical anchors and can be flipped atomically
+		manager.setActiveTool('long-position');
+		pointer(container, 'pointerdown', 200, 300);
+		pointer(win, 'pointerup', 200, 300);
+		assert.equal(manager.drawings().length, 2);
+		const pos = manager.drawings()[1];
+		assert.equal(pos.type, 'long-position');
+		assert.equal(pos.options().alwaysShowStats, false);
+		assert.equal(pos.points().length, 3);
+		assert.equal(manager.selectedDrawing()?.id, pos.id);
+		const flipped = flipPosition('long-position', pos.points());
+		manager.replaceDrawing(pos.id, flipped.type, flipped.points);
+		assert.equal(manager.getDrawing(pos.id)?.type, 'short-position');
+		manager.undo();
+		assert.equal(manager.getDrawing(pos.id)?.type, 'long-position');
+
+		// 3. Clone drawing & storage round-trip with new style options
+		const cloned = manager.cloneDrawing(pos.id, 4, 0);
+		assert.ok(cloned && cloned.id !== pos.id);
+		assert.equal(manager.drawings().length, 3);
+		manager.updateDrawingOptions(manager.drawings()[0].id, { waveDegree: 'primary', waveShowLines: false });
+		manager.updateDrawingOptions(pos.id, { compactStats: true, alwaysShowStats: true });
+
+		const storage = memory();
+		const repo = new DrawingRepository(storage, key);
+		repo.load();
+		const saved = reconcileDrawings(empty(), manager.exportState().drawings, scale);
+		repo.save(saved);
+		const reloaded = restoreDrawings(new DrawingRepository(storage, key).load(), scale);
+		assert.equal(reloaded.length, 3);
+		assert.equal(reloaded[0].options.waveDegree, 'primary');
+		assert.equal(reloaded[0].options.waveShowLines, false);
+		assert.equal(reloaded[1].options.compactStats, true);
+		assert.equal(reloaded[1].options.alwaysShowStats, true);
+		assert.throws(() => parseDrawingStore({
+			...saved,
+			documents: [{ ...saved.documents[1], style: { ...saved.documents[1].style, alwaysShowStats: 'yes' } }],
+		}, key));
+		assert.throws(() => parseDrawingStore({
+			...saved,
+			documents: [{ ...saved.documents[0], style: { ...saved.documents[0].style, waveDegree: 'invalid-degree' } }],
+		}, key));
+
+		manager.destroy();
 	} finally { globalThis.window = savedWindow; globalThis.HTMLElement = savedElement; }
 });
 

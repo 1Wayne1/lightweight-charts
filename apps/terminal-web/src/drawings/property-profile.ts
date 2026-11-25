@@ -1,4 +1,4 @@
-import { attachedTextKind, getToolDefinition, type DrawingToolType } from '@tradingview/lwc-plugin-drawing-tools';
+import { attachedTextKind, getToolDefinition, isElliottTool, type DrawingToolType } from '@tradingview/lwc-plugin-drawing-tools';
 
 /** UI capabilities follow the current renderers, not the broader TradingView catalogue. */
 export function propertyProfile(type: DrawingToolType) {
@@ -8,19 +8,21 @@ export function propertyProfile(type: DrawingToolType) {
 	const is = (...types: DrawingToolType[]) => types.includes(type);
 	const annotation = def.capabilities.hasText || is('price-label', 'flag', 'arrow-up', 'arrow-down');
 	const pattern = def.group === '形态';
+	const wave = isElliottTool(type);
 	const position = is('long-position', 'short-position');
 	const volume = is('fixed-volume-profile', 'anchored-volume-profile');
 	const levels = is('fib-retracement', 'fib-extension', 'fib-channel', 'trend-fib-time', 'fib-fan', 'fib-arcs', 'fib-circles', 'fib-wedge');
+	const fibReverse = is('fib-retracement', 'fib-extension');
 	const labels = pattern || position || volume || is('horizontal-line', 'vertical-line', 'price-date-range', 'horizontal-ray', 'trend-angle', 'info-line', 'forecast', 'pitchfan', 'regression-channel', 'fib-retracement', 'fib-extension', 'fib-channel', 'fib-time-zone', 'trend-fib-time', 'fib-fan', 'fib-arcs', 'fib-circles', 'gann-fan', 'projection', 'ghost-feed', 'price-range', 'date-range', 'anchored-vwap');
 	const extendedLabels = labels && !is('horizontal-line', 'vertical-line', 'price-date-range', 'fib-retracement');
 	const stroke = !annotation || is('text', 'callout', 'price-note', 'pin', 'signpost', 'flag', 'arrow-up', 'arrow-down');
-	const fill = is('rectangle', 'parallel-channel', 'price-date-range', 'text', 'flat-channel', 'disjoint-channel', 'regression-channel', 'rotated-rectangle', 'ellipse', 'circle', 'triangle', 'xabcd', 'cypher', 'abcd', 'gann-box', 'gann-square', 'gann-square-fixed', 'price-range', 'date-range') || volume;
+	const fill = is('rectangle', 'parallel-channel', 'price-date-range', 'text', 'flat-channel', 'disjoint-channel', 'regression-channel', 'rotated-rectangle', 'ellipse', 'circle', 'triangle', 'xabcd', 'cypher', 'abcd', 'triangle-pattern', 'head-shoulders', 'gann-box', 'gann-square', 'gann-square-fixed', 'price-range', 'date-range') || volume;
 	return {
 		stroke: stroke && !is('bars-pattern', 'ghost-feed') && !volume,
 		width: stroke && type !== 'text' && attached !== 'mark',
 		lineStyle: stroke && attached !== 'mark' && !is('text', 'price-date-range', 'brush', 'highlighter'),
 		fill,
-		opacity: fill || position || is('fib-retracement', 'highlighter', 'bars-pattern', 'ghost-feed'),
+		opacity: fill || position || levels || is('highlighter', 'bars-pattern', 'ghost-feed'),
 		text: primaryText || (attached !== null && attached !== 'levels'),
 		primaryText, attached,
 		font: annotation || extendedLabels || attached !== null,
@@ -31,7 +33,9 @@ export function propertyProfile(type: DrawingToolType) {
 		midline: type === 'parallel-channel',
 		levels,
 		levelColors: levels && type !== 'trend-fib-time' && type !== 'fib-wedge',
+		fibReverse,
 		position,
+		wave,
 		volume,
 		regression: type === 'regression-channel',
 		annotation,
